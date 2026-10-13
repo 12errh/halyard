@@ -1,6 +1,7 @@
 import { useLayoutEffect, useRef, useState } from "react";
+import { Companion } from "./companion";
 import { AnimatePresence, motion } from "motion/react";
-import { ArrowDown, Pencil } from "lucide-react";
+import { ArrowDown, Paperclip, Sparkles } from "lucide-react";
 import { useAutoScroll } from "@/hooks/use-auto-scroll";
 import { PartView } from "./part-view";
 import { DiffSummary } from "./diff-view";
@@ -8,7 +9,7 @@ import { PermissionCard } from "./permission-card";
 import { QuestionCard } from "./question-card";
 import { isStreaming, orderedParts, type MessageEntry } from "@/lib/opencode/thread";
 import { normaliseDiff, type NormalisedDiff } from "@/lib/diff";
-import type { PermissionReply, PendingPermission, UserMessage } from "@/lib/opencode/types";
+import type { Part, PermissionReply, PendingPermission, UserMessage } from "@/lib/opencode/types";
 import type { PendingQuestion } from "@/state/questions";
 import { cn } from "@/lib/utils";
 
@@ -24,6 +25,8 @@ export function MessageThread({
   onQuestionSkip,
   diffs = [],
   onEditAndResend,
+  title,
+  subtitle,
 }: {
   entries: MessageEntry[];
   live: boolean;
@@ -36,6 +39,8 @@ export function MessageThread({
   onQuestionSkip?(pending: PendingQuestion): Promise<void>;
   diffs?: NormalisedDiff[];
   onEditAndResend?(messageID: string, text: string): Promise<void>;
+  title?: string;
+  subtitle?: string;
 }) {
   // Follow the stream, but never fight a user who has scrolled up.
   const { containerRef, contentRef, stuck, scrollToBottom } = useAutoScroll();
@@ -103,6 +108,23 @@ export function MessageThread({
           </div>
         )}
 
+        {/* A brand-new thread is the most-seen screen in the app, so it gets a
+            proper welcome rather than a blank column. Centred with a min-height
+            so it sits optically in the middle without fighting the composer. */}
+        {!live && entries.length === 0 && (
+          <div className="flex min-h-[52vh] flex-col items-center justify-center gap-3 py-10 text-center">
+            <Companion size={116} />
+            <div className="space-y-1">
+              <h2 className="text-[1.05rem] font-medium tracking-tight text-ink">
+                {title ?? "What are we working on?"}
+              </h2>
+              <p className="text-[0.84rem] text-ink-faint">
+                {subtitle ?? "Describe the change, the bug, or the file you want to look at."}
+              </p>
+            </div>
+          </div>
+        )}
+
         </div>
       </div>
 
@@ -140,7 +162,6 @@ function Turn({
   const { info } = entry;
   const parts = orderedParts(entry);
   const flowing = streaming || isStreaming(entry);
-  const [editing, setEditing] = useState(false);
 
   // A delta can arrive before `message.updated`. Nothing is rendered until we
   // know the message's role, but the parts are already buffered in the store.
@@ -150,54 +171,97 @@ function Turn({
   const createdAt = info.time?.created;
   const text = userText(parts);
   const canEdit = !assistant && text.length > 0 && onEditAndResend !== undefined;
+  const [editing, setEditing] = useState(false);
 
   return (
     <motion.article
       initial={{ opacity: 0, y: 6 }}
       animate={{ opacity: 1, y: 0 }}
       transition={{ duration: 0.22, ease: [0.22, 1, 0.36, 1] }}
-      className={cn("group py-2", assistant ? "pl-7" : "pr-7")}
+      className={cn("group py-2.5", assistant ? "" : "flex justify-end")}
     >
-      {!assistant && (
-        <div className="mb-1 flex items-baseline gap-2">
-          <span className="text-[0.74rem] font-semibold uppercase tracking-[0.1em] text-accent">
-            You
+      {assistant ? (
+        // Assistant: full-width prose on the left. A bubble would fight the
+        // markdown and code blocks, which need the room.
+        <div className="flex gap-3">
+          <span className="mt-[3px] flex h-6 w-6 shrink-0 select-none items-center justify-center rounded-full border border-line bg-raised">
+            <Sparkles size={11} className="text-accent" />
           </span>
-          <time className="text-[0.68rem] text-ink-ghost">{formatTime(createdAt)}</time>
-          {canEdit && !editing && (
-            <button
-              type="button"
-              onClick={() => setEditing(true)}
-              aria-label="Edit and resend"
-              className="ml-auto flex items-center gap-1 rounded px-1 py-0.5 text-[0.68rem] text-ink-ghost opacity-0 transition-opacity hover:text-ink-muted focus-visible:opacity-100 group-hover:opacity-100"
-            >
-              <Pencil size={10} />
-              Edit
-            </button>
+          <div className="min-w-0 flex-1 text-[0.88rem] text-ink">
+            {parts.map((part) => (
+              <PartView key={part.id} part={part} streaming={flowing && part.type === "text"} />
+            ))}
+            {!parts.length && flowing && <TypingIndicator />}
+          </div>
+        </div>
+      ) : (
+        // User: a bubble on the right, so the two sides are unmistakable at a
+        // glance rather than distinguished only by a label.
+        <div className="max-w-[85%] min-w-0">
+          <div className="mb-1 flex items-baseline justify-end gap-2 pr-0.5">
+            <time className="text-[0.66rem] text-ink-ghost opacity-0 transition-opacity group-hover:opacity-100">
+              {formatTime(createdAt)}
+            </time>
+            {canEdit && !editing && (
+              <button
+                type="button"
+                onClick={() => setEditing(true)}
+                aria-label="Edit and resend"
+                className="rounded px-1 py-0.5 text-[0.68rem] text-ink-ghost transition-colors hover:text-ink-muted"
+              >
+                Edit
+              </button>
+            )}
+          </div>
+
+          {editing && onEditAndResend ? (
+            <EditBox
+              initial={text}
+              onCancel={() => setEditing(false)}
+              onSubmit={async (next) => {
+                setEditing(false);
+                await onEditAndResend(info.id, next);
+              }}
+            />
+          ) : (
+            <div className="rounded-[var(--radius-panel)] rounded-br-[6px] border border-line bg-raised/70 px-3.5 py-2.5">
+              {parts.map((part) =>
+                // Plain text in the bubble: markdown headings and tables look
+                // wrong squeezed into a chat bubble, and user turns are prose.
+                part.type === "text" ? (
+                  <p
+                    key={part.id}
+                    data-selectable
+                    className="whitespace-pre-wrap break-words text-[0.88rem] leading-[1.6] text-ink"
+                  >
+                    {(part as { text: string }).text}
+                  </p>
+                ) : (
+                  <UserPart key={part.id} part={part} />
+                ),
+              )}
+            </div>
           )}
         </div>
       )}
 
-      {editing && onEditAndResend ? (
-        <EditBox
-          initial={text}
-          onCancel={() => setEditing(false)}
-          onSubmit={async (next) => {
-            setEditing(false);
-            await onEditAndResend(info.id, next);
-          }}
-        />
-      ) : (
-        <div className="text-[0.88rem] text-ink">
-          {parts.map((part) => (
-            <PartView key={part.id} part={part} streaming={flowing && part.type === "text"} />
-          ))}
-        </div>
-      )}
-
-      {assistant && !parts.length && flowing && <TypingIndicator />}
       {showDiffAfter.length > 0 && <DiffSummary diffs={showDiffAfter} />}
     </motion.article>
+  );
+}
+
+/** Non-text parts inside a user bubble — attachments and the like. */
+function UserPart({ part }: { part: Part }) {
+  if (part.type !== "file") return null;
+  return (
+    <div
+      data-selectable
+      title={part.filename ?? part.url}
+      className="flex items-center gap-1.5 rounded-[6px] bg-surface/70 px-2 py-1 text-[0.76rem] text-ink-muted"
+    >
+      <Paperclip size={11} className="shrink-0 text-ink-faint" />
+      <span className="truncate">{part.filename ?? part.url}</span>
+    </div>
   );
 }
 
