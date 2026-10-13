@@ -4,15 +4,17 @@ import {
   Check,
   ChevronDown,
   ChevronRight,
+  Download,
   FolderOpen,
   FolderPlus,
   GitBranch,
   Pencil,
-  Sparkles,
   Plus,
   Search,
   Settings2,
+  Sparkles,
   Trash2,
+  Upload,
 } from "lucide-react";
 import { open } from "@tauri-apps/plugin-dialog";
 import { Button } from "@/components/ui/button";
@@ -28,6 +30,7 @@ import {
 } from "@/state/sessions";
 import { useProjects } from "@/state/projects";
 import { switchProject } from "@/actions/project";
+import { exportSession as exportSessionFile, importSession as importSessionFile } from "@/actions/transfer";
 import {
   createSession as createSessionAction,
   deleteSession,
@@ -35,6 +38,7 @@ import {
   loadChildSessions,
   renameSession,
 } from "@/actions/sessions";
+import { useServer } from "@/state/server";
 import { useThreads } from "@/state/threads";
 
 export function Sidebar({ onOpenSettings }: { onOpenSettings(): void }) {
@@ -51,8 +55,28 @@ export function Sidebar({ onOpenSettings }: { onOpenSettings(): void }) {
   // opening the app never walks every delegated task up front.
   const activeId = useSessions((s) => s.activeId);
   const busyId = useThreads((s) => s.busySessionId);
-
   const active = useProjects((s) => s.active);
+  const [notice, setNotice] = useState<string | null>(null);
+
+  const handleExport = async (sessionId: string) => {
+    const session = useSessions.getState().sessions.find((s) => s.id === sessionId);
+    const result = await exportSessionFile(sessionId, session?.title ?? "");
+    setNotice(result.message);
+  };
+
+  const handleImport = async () => {
+    const result = await importSessionFile();
+    if (result.ok) {
+      // The importer writes into opencode's store; re-read the list.
+      const client = useServer.getState().phase;
+      if (client.kind === "ready") {
+        const { OpencodeClient } = await import("@/lib/opencode/client");
+        const fresh = await new OpencodeClient(client.info.url).listSessions().catch(() => []);
+        useSessions.getState().setSessions(fresh);
+      }
+    }
+    setNotice(result.ok ? result.message : null);
+  };
   const recent = useProjects((s) => s.recent);
   const [menuOpen, setMenuOpen] = useState(false);
   const menuRef = useRef<HTMLDivElement>(null);
@@ -180,10 +204,36 @@ export function Sidebar({ onOpenSettings }: { onOpenSettings(): void }) {
           size="icon-sm"
           onClick={() => void createSessionAction()}
           aria-label="New session"
+          title="New session"
         >
           <Plus size={13} />
         </Button>
+        <Button
+          variant="ghost"
+          size="icon-sm"
+          onClick={() => void handleImport()}
+          aria-label="Import a session"
+          title="Import a session"
+        >
+          <Upload size={13} />
+        </Button>
+        <Button
+          variant="ghost"
+          size="icon-sm"
+          disabled={!activeId}
+          onClick={() => activeId && void handleExport(activeId)}
+          aria-label="Export current session"
+          title="Export this session"
+        >
+          <Download size={13} />
+        </Button>
       </div>
+
+      {notice && (
+        <p className="mx-2.5 mb-1 rounded-[6px] border border-line bg-raised px-2 py-1 text-[0.7rem] text-ink-muted">
+          {notice}
+        </p>
+      )}
 
       {/* Session list */}
       <div className="scroll-area flex-1 px-1.5 pb-3">
@@ -286,6 +336,15 @@ export function Sidebar({ onOpenSettings }: { onOpenSettings(): void }) {
                         }}
                       >
                         <GitBranch size={11} />
+                      </RowAction>
+                      <RowAction
+                        label="Export session"
+                        onClick={(event) => {
+                          event.stopPropagation();
+                          void handleExport(session.id);
+                        }}
+                      >
+                        <Download size={11} />
                       </RowAction>
                       <RowAction
                         label="Delete session"

@@ -24,18 +24,26 @@ export interface ServerLogEntry {
 interface ServerStore {
   phase: ServerPhase;
   logs: ServerLogEntry[];
+  /** Path of the project the running server is scoped to. */
+  project: string | null;
+  /** Path of the binary in use, when overridden in Settings. */
+  binaryOverride: string | null;
   /** Bind the event listeners exactly once, for the app's lifetime. */
   attach(): Promise<() => void>;
   start(project: string, binaryOverride: string | null): Promise<void>;
   stop(): Promise<void>;
+  /** Stop and start again on the same project. */
+  restart(project?: string): Promise<void>;
   reset(): void;
 }
 
 const MAX_LOG_LINES = 300;
 
-export const useServer = create<ServerStore>((set) => ({
+export const useServer = create<ServerStore>((set, get) => ({
   phase: { kind: "stopped" },
   logs: [],
+  project: null,
+  binaryOverride: null,
 
   attach: async () => {
     const [unlistenStatus, unlistenLog] = await Promise.all([
@@ -55,7 +63,7 @@ export const useServer = create<ServerStore>((set) => ({
   },
 
   start: async (project, binaryOverride) => {
-    set({ phase: { kind: "starting" }, logs: [] });
+    set({ phase: { kind: "starting" }, logs: [], project, binaryOverride });
     try {
       const info = await api.startServer(project, binaryOverride);
       set({ phase: { kind: "ready", info } });
@@ -70,7 +78,16 @@ export const useServer = create<ServerStore>((set) => ({
     await api.stopServer().catch(() => undefined);
   },
 
-  reset: () => set({ phase: { kind: "stopped" }, logs: [] }),
+  // opencode reads its config at start and never re-reads it, so applying a
+  // settings change means cycling the process.
+  restart: async (project) => {
+    const target = project ?? get().project;
+    if (!target) return;
+    await get().stop();
+    await get().start(target, get().binaryOverride);
+  },
+
+  reset: () => set({ phase: { kind: "stopped" }, logs: [], project: null }),
 }));
 
 function fromRust(status: ServerStatus): ServerPhase {

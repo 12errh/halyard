@@ -1,7 +1,9 @@
 //! Halyard — a native desktop shell for the opencode coding agent.
 
 pub mod binary;
+pub mod config;
 pub mod probe;
+pub mod transfer;
 pub mod server;
 pub mod settings;
 
@@ -30,6 +32,12 @@ pub fn run() {
         ))
         .manage(Arc::new(ServerManager::new()))
         .invoke_handler(tauri::generate_handler![
+            config::read_config_file,
+            config::write_config_file,
+            config::global_config,
+            config::validate_config,
+            transfer::export_session,
+            transfer::import_session,
             server::start_server,
             server::stop_server,
             server::server_status,

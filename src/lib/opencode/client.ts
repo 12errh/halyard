@@ -36,6 +36,19 @@ export class OpencodeError extends Error {
   }
 }
 
+export interface LspStatus {
+  id?: string;
+  name: string;
+  root?: string;
+  status: string;
+}
+
+export interface FormatterStatus {
+  name: string;
+  extensions?: string[];
+  enabled?: boolean;
+}
+
 export interface StatusEntry {
   name?: string;
   status?: string;
@@ -182,16 +195,39 @@ export class OpencodeClient {
     }>("/config/providers");
   }
 
-  agentsConfig() {
-    return this.request<Record<string, unknown>>("/config");
+  /** Credential entry points a provider offers (api key, oauth, ...). */
+  authMethods() {
+    return this.request<Record<string, Array<{ type: string; label: string }>>>("/provider/auth");
+  }
+
+  setAuth(providerID: string, type: "api" | "oauth", secret: string) {
+    return this.request<boolean>(`/auth/${providerID}`, {
+      method: "PUT",
+      body: JSON.stringify(type === "api" ? { type: "api", key: secret } : { type: "oauth" }),
+    });
+  }
+
+  removeAuth(providerID: string) {
+    return this.request<boolean>(`/auth/${providerID}`, { method: "DELETE" });
   }
 
   mcpStatus() {
     return this.request<Record<string, StatusEntry>>("/mcp");
   }
 
+  addMcp(name: string, config: Record<string, unknown>) {
+    return this.request<Record<string, StatusEntry>>("/mcp", {
+      method: "POST",
+      body: JSON.stringify({ name, config }),
+    });
+  }
+
   lspStatus() {
-    return this.request<StatusEntry[]>("/lsp");
+    return this.request<LspStatus[]>("/lsp");
+  }
+
+  formatterStatus() {
+    return this.request<FormatterStatus[]>("/formatter");
   }
 
   config() {

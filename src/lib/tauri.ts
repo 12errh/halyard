@@ -35,7 +35,33 @@ export interface ServerLogLine {
   message: string;
 }
 
+export interface ConfigFile {
+  path: string;
+  content: string;
+  exists: boolean;
+}
+
+export interface ExportResult {
+  path: string;
+  bytes: number;
+}
+
 export const api = {
+  readConfigFile: (directory: string) => invoke<ConfigFile>("read_config_file", { directory }),
+
+  writeConfigFile: (path: string, content: string) =>
+    invoke<void>("write_config_file", { path, content }),
+
+  globalConfig: () => invoke<ConfigFile>("global_config"),
+
+  validateConfig: (content: string) => invoke<void>("validate_config", { content }),
+
+  exportSession: (sessionId: string, path: string, binaryOverride: string | null) =>
+    invoke<ExportResult>("export_session", { sessionId, path, binaryOverride }),
+
+  importSession: (path: string, binaryOverride: string | null) =>
+    invoke<boolean>("import_session", { path, binaryOverride }),
+
   startServer: (project: string, binaryOverride: string | null) =>
     invoke<ServerInfo>("start_server", { project, binaryOverride }),
 

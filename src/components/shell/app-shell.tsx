@@ -7,6 +7,7 @@ import { CommandPalette, type Command } from "@/components/command/command-palet
 import { Composer, type ComposerSubmit } from "@/components/chat/composer";
 import { MessageThread } from "@/components/chat/message-thread";
 import { StatusBar } from "@/components/chat/status-bar";
+import { UsageMeter } from "@/components/chat/usage-meter";
 import { ModelPicker } from "@/components/chat/model-picker";
 import { ModePicker } from "@/components/chat/mode-picker";
 import { preloadHighlighter } from "@/components/chat/highlight";
@@ -373,6 +374,8 @@ export function AppShell() {
                 onEditAndResend={editAndResend}
               />
 
+              <UsageMeter sessions={sessions} activeSession={activeSession} />
+
               <StatusBar
                 entries={entries}
                 busy={busy}
@@ -433,7 +436,11 @@ export function AppShell() {
       </div>
 
       <CommandPalette open={paletteOpen} commands={commands} onClose={() => togglePalette(false)} />
-      <SettingsDialog open={settingsOpen} onClose={() => setSettingsOpen(false)} />
+      <SettingsDialog
+        open={settingsOpen}
+        activeProject={activeProject}
+        onClose={() => setSettingsOpen(false)}
+      />
     </div>
   );
 }
