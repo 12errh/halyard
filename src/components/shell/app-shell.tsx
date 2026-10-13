@@ -7,6 +7,7 @@ import { CommandPalette, type Command } from "@/components/command/command-palet
 import { Composer, type ComposerSubmit } from "@/components/chat/composer";
 import { MessageThread } from "@/components/chat/message-thread";
 import { StatusBar } from "@/components/chat/status-bar";
+import { ModelPicker } from "@/components/chat/model-picker";
 import { preloadHighlighter } from "@/components/chat/highlight";
 import { SessionTabs } from "@/components/shell/session-tabs";
 import { Sidebar } from "@/components/shell/sidebar";
@@ -25,6 +26,7 @@ import { useThreads } from "@/state/threads";
 import { useUi } from "@/state/ui";
 import { pendingFor, usePermissions } from "@/state/permissions";
 import { switchProject } from "@/actions/project";
+import { useModels } from "@/state/models";
 import type { PermissionReply, PendingPermission, SessionStatus } from "@/lib/opencode/types";
 
 export function AppShell() {
@@ -101,6 +103,11 @@ export function AppShell() {
     // a new project and every session needs reloading.
     loadedFor.current = new Set<string>();
 
+    // Attach the client then pull the catalogue; model ids must come from the
+    // server that will actually run the prompt.
+    useModels.getState().setClient(client!);
+    void useModels.getState().load();
+
     void (async () => {
       const [all, statuses] = await Promise.all([
         client!.listSessions().catch(() => []),
@@ -124,7 +131,10 @@ export function AppShell() {
       }
     })();
 
-    return () => useThreads.getState().disconnect();
+    return () => {
+      useThreads.getState().disconnect();
+      useModels.getState().setClient(null);
+    };
   }, [phase, client, connect, setSessions, ingestPermission]);
 
   // Hydrate a thread the first time its tab becomes active.
@@ -148,6 +158,7 @@ export function AppShell() {
     async ({ text, attachments }: ComposerSubmit) => {
       if (!client) return;
       try {
+        const chosen = useModels.getState().selection;
         // Typing before any session exists is the common first-run path, so the
         // first prompt creates the session rather than being swallowed.
         let target = activeId;
@@ -158,6 +169,9 @@ export function AppShell() {
           target = created.id;
         }
         await client.sendPrompt(target, {
+          // opencode takes the model per prompt, so a mid-conversation switch
+          // applies to the next turn without forking the thread.
+          ...(chosen ? { model: { providerID: chosen.providerID, modelID: chosen.modelID } } : {}),
           parts: [
             ...(text ? [{ type: "text" as const, text }] : []),
             ...toFileParts(attachments),
@@ -294,6 +308,10 @@ export function AppShell() {
   const busy = busyId !== null && status.type === "busy";
   const activeSession = sessions.find((s) => s.id === activeId);
   const pending = pendingFor({ bySession: permissions }, activeId);
+  const modelList = useModels((s) => s.models);
+  const modelSelection = useModels((s) => s.selection);
+  const modelsLoading = useModels((s) => s.loading);
+  const selectModel = useModels((s) => s.select);
   const diffs = (thread?.diffs ?? []).map(normaliseDiff).filter((d) => d !== null);
 
   return (
@@ -347,6 +365,14 @@ export function AppShell() {
                 disabled={false}
                 placeholder="Ask opencode to do something…"
                 suggestFiles={(query) => client?.files(query, 12) ?? Promise.resolve([])}
+                modelPicker={
+                  <ModelPicker
+                    models={modelList}
+                    selection={modelSelection}
+                    loading={modelsLoading}
+                    onSelect={(next) => selectModel(next)}
+                  />
+                }
                 suggestCommands={async () => {
                   if (!client) return [];
                   const commands = await client.commands().catch(() => []);

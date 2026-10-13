@@ -12,12 +12,15 @@ import { useServer } from "@/state/server";
 import { useSessions } from "@/state/sessions";
 import { useThreads } from "@/state/threads";
 import { usePermissions } from "@/state/permissions";
+import { useModels } from "@/state/models";
 
 /** Clears every store whose contents are scoped to a single project. */
 export function resetProjectScope() {
   useSessions.setState({ sessions: [], tabs: [], activeId: null, query: "" });
   useThreads.setState({ threads: {}, busySessionId: null, connection: "idle", handle: null });
   usePermissions.getState().reset();
+  // Model ids belong to the server that issued them; the next one may differ.
+  useModels.getState().reset();
 }
 
 export async function switchProject(path: string): Promise<void> {

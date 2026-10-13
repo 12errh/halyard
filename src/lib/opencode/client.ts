@@ -156,6 +156,17 @@ export class OpencodeClient {
     return this.request<Array<{ name: string; description?: string }>>("/command");
   }
 
+  /**
+   * Provider and model catalogue.
+   *
+   * Deliberately `GET /provider`, not `/config/providers`: the latter returns
+   * every provider's API key in plaintext and a model picker has no business
+   * seeing one.
+   */
+  providerCatalogue() {
+    return this.request<unknown>("/provider");
+  }
+
   models() {
     return this.request<{
       providers: Array<{

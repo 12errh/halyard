@@ -39,7 +39,7 @@ export function Composer({
   placeholder = "Ask opencode to do something…",
   suggestFiles,
   suggestCommands,
-  onPickFile,
+  modelPicker,
 }: {
   onSubmit(payload: ComposerSubmit): void;
   onAbort(): void;
@@ -48,7 +48,8 @@ export function Composer({
   placeholder?: string;
   suggestFiles(query: string): Promise<string[]>;
   suggestCommands(): Promise<Suggestion[]>;
-  onPickFile?(): void;
+  /** Rendered in the composer's toolbar, left of the send affordance. */
+  modelPicker?: React.ReactNode;
 }) {
   const [value, setValue] = useState("");
   const [caret, setCaret] = useState(0);
@@ -336,25 +337,15 @@ export function Composer({
           />
 
           <div className="flex items-center justify-between gap-2 px-2 pb-2">
-            <div className="flex items-center gap-1.5 text-[0.68rem] text-ink-ghost">
-              <Kbd>@</Kbd>
-              <span>files</span>
-              <span className="text-line-strong">·</span>
-              <Kbd>/</Kbd>
-              <span>commands</span>
-              <span className="text-line-strong">·</span>
-              <span>drop or paste files</span>
-              {onPickFile && (
-                <Button
-                  variant="ghost"
-                  size="icon-sm"
-                  className="ml-1 h-5 w-5"
-                  onClick={onPickFile}
-                  aria-label="Attach a file"
-                >
-                  <Paperclip size={11} />
-                </Button>
-              )}
+            <div className="flex min-w-0 flex-1 items-center gap-2">
+              {modelPicker}
+              <div className="hidden items-center gap-1.5 text-[0.68rem] text-ink-ghost sm:flex">
+                <Kbd>@</Kbd>
+                <span>files</span>
+                <span className="text-line-strong">·</span>
+                <Kbd>/</Kbd>
+                <span>commands</span>
+              </div>
             </div>
 
             {busy ? (
