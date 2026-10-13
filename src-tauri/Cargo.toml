@@ -27,6 +27,7 @@ serde_json = "1"
 thiserror = "2"
 tokio = { version = "1", features = ["process", "io-util", "time", "sync", "rt", "macros"] }
 libc = "0.2.190"
+tauri-plugin-fs = "2.7.0"
 
 [dev-dependencies]
 tempfile = "3"

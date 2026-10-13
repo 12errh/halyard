@@ -30,6 +30,7 @@ import { pendingFor, usePermissions } from "@/state/permissions";
 import { switchProject } from "@/actions/project";
 import { useModels } from "@/state/models";
 import { useMode } from "@/state/mode";
+import { useSystem } from "@/state/system";
 import type { PermissionReply, PendingPermission, SessionStatus } from "@/lib/opencode/types";
 
 export function AppShell() {
@@ -65,6 +66,7 @@ export function AppShell() {
   const permissions = usePermissions((s) => s.bySession);
   const ingestPermission = usePermissions((s) => s.ingest);
   const ingestSessionEvent = useSessions((s) => s.ingest);
+  const ingestSystemEvent = useSystem((s) => s.ingest);
   const syncPermissions = usePermissions((s) => s.sync);
   const resolvePermission = usePermissions((s) => s.resolve);
 
@@ -107,6 +109,9 @@ export function AppShell() {
     connect(client!.eventsUrl(), (event) => {
       ingestPermission(event);
       ingestSessionEvent(event);
+      // Keeps providers, models, agents and MCP status live: connecting a
+      // provider or adding a server updates the settings tabs with no reload.
+      ingestSystemEvent(event);
     });
 
     // The per-session hydration cache is scoped to a project; a new server means
@@ -152,7 +157,15 @@ export function AppShell() {
       useThreads.getState().disconnect();
       useModels.getState().setClient(null);
     };
-  }, [phase, client, connect, setSessions, ingestPermission, ingestSessionEvent]);
+  }, [
+    phase,
+    client,
+    connect,
+    setSessions,
+    ingestPermission,
+    ingestSessionEvent,
+    ingestSystemEvent,
+  ]);
 
   // Hydrate a thread the first time its tab becomes active.
   const loadedFor = useRef(new Set<string>());

@@ -222,6 +222,32 @@ export class OpencodeClient {
     });
   }
 
+  /** Begin an MCP server's OAuth flow; open the returned URL. */
+  startMcpAuth(name: string) {
+    return this.request<{ authorizationUrl: string; oauthState: string }>(`/mcp/${name}/auth`, {
+      method: "POST",
+      body: JSON.stringify({}),
+    });
+  }
+
+  clearMcpAuth(name: string) {
+    return this.request<{ success: boolean }>(`/mcp/${name}/auth`, { method: "DELETE" });
+  }
+
+  connectMcp(name: string) {
+    return this.request<boolean>(`/mcp/${name}/connect`, {
+      method: "POST",
+      body: JSON.stringify({}),
+    });
+  }
+
+  disconnectMcp(name: string) {
+    return this.request<boolean>(`/mcp/${name}/disconnect`, {
+      method: "POST",
+      body: JSON.stringify({}),
+    });
+  }
+
   lspStatus() {
     return this.request<LspStatus[]>("/lsp");
   }
