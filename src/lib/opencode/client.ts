@@ -10,10 +10,20 @@ import type {
   AssistantMessage,
   MessageInfo,
   Part,
+  PermissionReply,
+  PendingPermission,
   ServerEvent,
   Session,
   SessionStatus,
 } from "./types";
+
+export interface FileNode {
+  name: string;
+  path: string;
+  absolute: string;
+  type: string;
+  ignored?: boolean;
+}
 
 export class OpencodeError extends Error {
   constructor(
@@ -179,8 +189,88 @@ export class OpencodeClient {
     });
   }
 
-  diff(sessionID: string) {
-    return this.request<{ diff: unknown[] }>(`/session/${sessionID}/diff`);
+  diff(sessionID: string, messageID?: string) {
+    const query = messageID ? `?messageID=${encodeURIComponent(messageID)}` : "";
+    // Shape is SnapshotFileDiff[]: keyed by `file`, not `path`.
+    return this.request<unknown[]>(`/session/${sessionID}/diff${query}`);
+  }
+
+  // --- Permissions (v2 is current; v1 kept as a fallback) ------------------
+
+  /** Pending v2 permission requests, wrapped in `{ data }`. */
+  async listPermissions(sessionID: string): Promise<PendingPermission[]> {
+    const raw = await this.request<{ data?: unknown[] }>(
+      `/api/session/${sessionID}/permission`,
+    );
+    const rows = raw?.data ?? [];
+    return rows
+      .map((row) => toPending(row, 2))
+      .filter((row): row is PendingPermission => row !== null);
+  }
+
+  async replyPermissionV2(sessionID: string, requestID: string, reply: PermissionReply) {
+    return this.request<unknown>(
+      `/api/session/${sessionID}/permission/${requestID}/reply`,
+      { method: "POST", body: JSON.stringify({ reply }) },
+    );
+  }
+
+  async replyPermissionV1(sessionID: string, requestID: string, reply: PermissionReply) {
+    return this.request<boolean>(`/session/${sessionID}/permissions/${requestID}`, {
+      method: "POST",
+      body: JSON.stringify({ response: reply }),
+    });
+  }
+
+  /**
+   * Reply using v2, falling back to v1.
+   *
+   * A server that only speaks v1 answers 404 here. Falling back keeps the
+   * approve button working rather than leaving the agent blocked forever.
+   */
+  async replyPermission(sessionID: string, permission: PendingPermission, reply: PermissionReply) {
+    if (permission.version === 1) {
+      return this.replyPermissionV1(sessionID, permission.id, reply);
+    }
+    try {
+      return await this.replyPermissionV2(sessionID, permission.id, reply);
+    } catch (error) {
+      if (error instanceof OpencodeError && error.status === 404) {
+        return this.replyPermissionV1(sessionID, permission.id, reply);
+      }
+      throw error;
+    }
+  }
+
+  // --- Files ---------------------------------------------------------------
+
+  /**
+   * List a directory. `path` must always be present — the server rejects the
+   * request outright when the key is missing, so an empty string is how you ask
+   * for the project root.
+   */
+  listFiles(path = "") {
+    return this.request<FileNode[]>(`/file?path=${encodeURIComponent(path)}`);
+  }
+
+  readFile(path: string) {
+    return this.request<{ type: string; content: string }>(
+      `/file/content?path=${encodeURIComponent(path)}`,
+    );
+  }
+
+  // --- Editing a prior turn ------------------------------------------------
+
+  /** Rewind the conversation to just before `messageID`. */
+  revert(sessionID: string, messageID: string, partID?: string) {
+    return this.request<Session>(`/session/${sessionID}/revert`, {
+      method: "POST",
+      body: JSON.stringify(partID ? { messageID, partID } : { messageID }),
+    });
+  }
+
+  unrevert(sessionID: string) {
+    return this.request<Session>(`/session/${sessionID}/unrevert`, { method: "POST" });
   }
 
   files(query: string, limit = 20) {
@@ -192,6 +282,32 @@ export class OpencodeClient {
   eventsUrl(): string {
     return `${this.baseUrl}/event`;
   }
+}
+
+/** Adapt a raw permission row into the UI's single shape, or reject it. */
+function toPending(raw: unknown, version: 1 | 2): PendingPermission | null {
+  if (!raw || typeof raw !== "object") return null;
+  const record = raw as Record<string, unknown>;
+  const id = typeof record.id === "string" ? record.id : null;
+  const sessionID = typeof record.sessionID === "string" ? record.sessionID : null;
+  if (!id || !sessionID) return null;
+
+  const source = record.source as { messageID?: string; callID?: string } | undefined;
+  const tool =
+    source && typeof source.messageID === "string" && typeof source.callID === "string"
+      ? { messageID: source.messageID, callID: source.callID }
+      : undefined;
+
+  return {
+    id,
+    sessionID,
+    action: typeof record.action === "string" ? record.action : "unknown",
+    resources: Array.isArray(record.resources) ? (record.resources as string[]) : [],
+    save: Array.isArray(record.save) ? (record.save as string[]) : undefined,
+    tool,
+    version,
+    askedAt: Date.now(),
+  };
 }
 
 export type { ServerEvent, AssistantMessage };

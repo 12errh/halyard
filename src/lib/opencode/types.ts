@@ -211,10 +211,56 @@ export type SessionStatus =
 // --- Diffs ----------------------------------------------------------------
 
 export interface FileDiff {
-  path: string;
+  path?: string;
+  file?: string;
   additions: number;
   deletions: number;
+  status?: string;
   patch?: string;
+}
+
+// --- Permissions ----------------------------------------------------------
+
+/**
+ * opencode exposes two permission generations. `permission.asked` is the
+ * original shape; `permission.v2.asked` is the current one. Both are
+ * normalised into `PendingPermission` so the UI has a single thing to render.
+ */
+export type PermissionReply = "once" | "always" | "reject";
+
+export interface PendingPermission {
+  /** Stable across both generations; the id the reply endpoint expects. */
+  id: string;
+  sessionID: string;
+  /** v1 `permission`, v2 `action`. */
+  action: string;
+  /** v1 `patterns`, v2 `resources`. */
+  resources: string[];
+  /** Actions that "always allow" would persist, when the server supplies them. */
+  save?: string[];
+  tool?: { messageID: string; callID: string };
+  /** Which event produced this, so the card can label itself accurately. */
+  version: 1 | 2;
+  /** Local-only: when Halyard first learned about it, for stable ordering. */
+  askedAt: number;
+}
+
+export interface PermissionAskedV1 {
+  id: string;
+  sessionID: string;
+  permission: string;
+  patterns: string[];
+  always?: string[];
+  tool?: { messageID: string; callID: string };
+}
+
+export interface PermissionAskedV2 {
+  id: string;
+  sessionID: string;
+  action: string;
+  resources: string[];
+  save?: string[];
+  source?: { type: string; messageID: string; callID: string };
 }
 
 // --- Events ---------------------------------------------------------------
@@ -245,9 +291,9 @@ export interface Events {
   "session.idle": { sessionID: string };
   "session.error": { sessionID: string; error: MessageError };
   "session.diff": { sessionID: string; diff: FileDiff[] };
-  "permission.asked": { sessionID: string; id: string; action: string; resources?: string[]; title?: string };
-  "permission.v2.asked": { sessionID: string; id: string; action: string; resources: string[] };
+  "permission.replied": { sessionID: string; requestID: string; reply: string };
   [key: string]: { sessionID?: string } & Record<string, unknown>;
+
 }
 
 export type EventType = keyof Events & string;

@@ -24,7 +24,7 @@ interface ThreadStore {
   busySessionId: string | null;
   handle: SseHandle | null;
 
-  connect(url: string): void;
+  connect(url: string, alsoHandle?: (event: ServerEvent) => void): void;
   disconnect(): void;
   ingest(event: ServerEvent): void;
   load(sessionId: string, entries: Array<{ info: import("@/lib/opencode/types").MessageInfo; parts: import("@/lib/opencode/types").Part[] }>): void;
@@ -37,10 +37,16 @@ export const useThreads = create<ThreadStore>((set, get) => ({
   busySessionId: null,
   handle: null,
 
-  connect: (url) => {
+  connect: (url, alsoHandle) => {
     get().disconnect();
     const handle = subscribe(url, {
-      onEvent: (event) => get().ingest(event),
+      // The SSE subscription is the single fan-out point for server events.
+      // `alsoHandle` lets other stores (permissions) observe the same stream
+      // without opening a second connection.
+      onEvent: (event) => {
+        get().ingest(event);
+        alsoHandle?.(event);
+      },
       onStatus: (status) =>
         set((state) => ({
           connection: status,

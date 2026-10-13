@@ -4,28 +4,34 @@ import { open } from "@tauri-apps/plugin-dialog";
 import { FolderOpen } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { CommandPalette, type Command } from "@/components/command/command-palette";
-import { Composer } from "@/components/chat/composer";
+import { Composer, type ComposerSubmit } from "@/components/chat/composer";
 import { MessageThread } from "@/components/chat/message-thread";
+import { StatusBar } from "@/components/chat/status-bar";
 import { preloadHighlighter } from "@/components/chat/highlight";
 import { SessionTabs } from "@/components/shell/session-tabs";
 import { Sidebar } from "@/components/shell/sidebar";
 import { TitleBar } from "@/components/shell/title-bar";
+import { FileTree } from "@/components/shell/file-tree";
 import { EmptyState } from "./empty-state";
 import { SettingsDialog } from "./settings-dialog";
 import { OpencodeClient } from "@/lib/opencode/client";
+import { toFileParts } from "@/lib/attachments";
+import { normaliseDiff } from "@/lib/diff";
 import type { MessageEntry } from "@/lib/opencode/thread";
 import { useProjects } from "@/state/projects";
 import { useServer } from "@/state/server";
 import { useSessions } from "@/state/sessions";
 import { useThreads } from "@/state/threads";
 import { useUi } from "@/state/ui";
-import type { SessionStatus } from "@/lib/opencode/types";
+import { pendingFor, usePermissions } from "@/state/permissions";
+import type { PermissionReply, PendingPermission, SessionStatus } from "@/lib/opencode/types";
 
 export function AppShell() {
   const phase = useServer((s) => s.phase);
   const activeProject = useProjects((s) => s.active);
   const hydrate = useProjects((s) => s.hydrate);
   const openProject = useProjects((s) => s.openProject);
+  const binaryOverride = useProjects((s) => s.binaryOverride);
   const start = useServer((s) => s.start);
   const attach = useServer((s) => s.attach);
   const connect = useThreads((s) => s.connect);
@@ -33,6 +39,8 @@ export function AppShell() {
 
   const sidebarOpen = useUi((s) => s.sidebarOpen);
   const toggleSidebar = useUi((s) => s.toggleSidebar);
+  const fileTreeOpen = useUi((s) => s.fileTreeOpen);
+  const toggleFileTree = useUi((s) => s.toggleFileTree);
   const settingsOpen = useUi((s) => s.settingsOpen);
   const setSettingsOpen = useUi((s) => s.setSettingsOpen);
   const paletteOpen = useUi((s) => s.paletteOpen);
@@ -48,6 +56,11 @@ export function AppShell() {
 
   const thread = useThreads((s) => (activeId ? s.threads[activeId] : undefined));
   const busyId = useThreads((s) => s.busySessionId);
+
+  const permissions = usePermissions((s) => s.bySession);
+  const ingestPermission = usePermissions((s) => s.ingest);
+  const syncPermissions = usePermissions((s) => s.sync);
+  const resolvePermission = usePermissions((s) => s.resolve);
 
   const client = useMemo(
     () => (phase.kind === "ready" ? new OpencodeClient(phase.info.url) : null),
@@ -68,7 +81,6 @@ export function AppShell() {
   // mount (before settings arrive) and never again — leaving a remembered
   // project with no server, forever.
   const projectsLoaded = useProjects((s) => s.loaded);
-  const binaryOverride = useProjects((s) => s.binaryOverride);
   const bootstrapped = useRef(false);
 
   useEffect(() => {
@@ -80,22 +92,25 @@ export function AppShell() {
   // Bind the event stream to the live server.
   useEffect(() => {
     if (phase.kind !== "ready") return;
-    connect(client!.eventsUrl());
+    // One subscription, fanned out: the thread reducer owns messages, the
+    // permission store owns prompts. A second connection would double every
+    // event and race on reconnect.
+    connect(client!.eventsUrl(), ingestPermission);
+
     void (async () => {
       const [all, statuses] = await Promise.all([
         client!.listSessions().catch(() => []),
         client!.status().catch(() => ({})),
       ]);
       setSessions(all);
-      // Seed which sessions are already running, so the sidebar shows a live
-      // dot for work started outside this window.
       for (const [sessionID, status] of Object.entries(statuses)) {
         if (status.type !== "busy") continue;
         useThreads.setState({ busySessionId: sessionID });
       }
     })();
+
     return () => useThreads.getState().disconnect();
-  }, [phase, client, connect, setSessions]);
+  }, [phase, client, connect, setSessions, ingestPermission]);
 
   // Hydrate a thread the first time its tab becomes active.
   const loadedFor = useRef(new Set<string>());
@@ -106,16 +121,24 @@ export function AppShell() {
     void (async () => {
       const entries = await client.messages(activeId).catch(() => []);
       load(activeId, entries);
+      // Permissions asked before this tab was opened still need showing.
+      const pending = await client.listPermissions(activeId).catch(() => []);
+      if (pending.length > 0) syncPermissions(activeId, pending);
     })();
-  }, [activeId, client, load]);
+  }, [activeId, client, load, syncPermissions]);
 
   // --- Actions -------------------------------------------------------------
 
   const send = useCallback(
-    async (text: string) => {
+    async ({ text, attachments }: ComposerSubmit) => {
       if (!client || !activeId) return;
       try {
-        await client.sendPrompt(activeId, { parts: [{ type: "text", text }] });
+        await client.sendPrompt(activeId, {
+          parts: [
+            ...(text ? [{ type: "text" as const, text }] : []),
+            ...toFileParts(attachments),
+          ],
+        });
       } catch (error) {
         console.error("prompt failed", error);
       }
@@ -126,6 +149,25 @@ export function AppShell() {
   const abort = useCallback(() => {
     if (client && activeId) void client.abort(activeId).catch(() => undefined);
   }, [client, activeId]);
+
+  const replyPermission = useCallback(
+    async (permission: PendingPermission, reply: PermissionReply) => {
+      if (!client) throw new Error("not connected to opencode");
+      await client.replyPermission(permission.sessionID, permission, reply);
+      resolvePermission(permission.sessionID, permission.id);
+    },
+    [client, resolvePermission],
+  );
+
+  /** Rewind to just before `messageID`, then send the replacement. */
+  const editAndResend = useCallback(
+    async (messageID: string, text: string) => {
+      if (!client || !activeId) return;
+      await client.revert(activeId, messageID);
+      await client.sendPrompt(activeId, { parts: [{ type: "text", text }] });
+    },
+    [client, activeId],
+  );
 
   const pickFolder = useCallback(async () => {
     const selected = await open({ directory: true, multiple: false, title: "Open project folder" });
@@ -146,12 +188,12 @@ export function AppShell() {
     const mod = navigator.platform.includes("Mac") ? "⌘" : "Ctrl";
     const list: Command[] = [
       { id: "new-session", label: "New session", group: "Session", hint: `${mod}N`, run: () => void newSession() },
-      { id: "new-tab", label: "New session in new tab", group: "Session", hint: `${mod}T`, run: () => void newSession() },
       { id: "close-tab", label: "Close current tab", group: "Session", hint: `${mod}W`, run: () => activeId && closeTab(activeId) },
       { id: "next-tab", label: "Next tab", group: "Session", hint: "Ctrl Tab", run: () => stepTab(1) },
       { id: "prev-tab", label: "Previous tab", group: "Session", hint: "Ctrl Shift Tab", run: () => stepTab(-1) },
       { id: "open-project", label: "Open folder…", group: "Project", run: () => void pickFolder() },
       { id: "toggle-sidebar", label: "Toggle sidebar", group: "View", hint: `${mod}B`, run: () => toggleSidebar() },
+      { id: "toggle-files", label: "Toggle file explorer", group: "View", hint: `${mod}E`, run: () => toggleFileTree() },
       { id: "settings", label: "Open settings", group: "App", hint: `${mod},`, run: () => setSettingsOpen(true) },
       { id: "palette", label: "Show all commands", group: "App", hint: `${mod}K`, run: () => togglePalette(true) },
     ];
@@ -165,7 +207,7 @@ export function AppShell() {
       });
     }
     return list;
-  }, [newSession, closeTab, activeId, stepTab, pickFolder, toggleSidebar, setSettingsOpen, togglePalette, sessions, openTab]);
+  }, [newSession, closeTab, activeId, stepTab, pickFolder, toggleSidebar, toggleFileTree, setSettingsOpen, togglePalette, sessions, openTab]);
 
   // --- Keyboard ------------------------------------------------------------
 
@@ -198,6 +240,11 @@ export function AppShell() {
         toggleSidebar();
         return;
       }
+      if (mod && event.key.toLowerCase() === "e") {
+        event.preventDefault();
+        toggleFileTree();
+        return;
+      }
       if (mod && event.key.toLowerCase() === "w" && activeId) {
         event.preventDefault();
         closeTab(activeId);
@@ -210,7 +257,7 @@ export function AppShell() {
     };
     window.addEventListener("keydown", onKey);
     return () => window.removeEventListener("keydown", onKey);
-  }, [togglePalette, settingsOpen, setSettingsOpen, stepTab, toggleSidebar, closeTab, activeId, newSession]);
+  }, [togglePalette, settingsOpen, setSettingsOpen, stepTab, toggleSidebar, toggleFileTree, closeTab, activeId, newSession]);
 
   // --- Render --------------------------------------------------------------
 
@@ -221,10 +268,17 @@ export function AppShell() {
   const status: SessionStatus = thread?.status ?? { type: "idle" };
   const busy = busyId !== null && status.type === "busy";
   const activeSession = sessions.find((s) => s.id === activeId);
+  const pending = pendingFor({ bySession: permissions }, activeId);
+  const diffs = (thread?.diffs ?? []).map(normaliseDiff).filter((d) => d !== null);
 
   return (
     <div className="flex h-full flex-col bg-canvas">
-      <TitleBar onToggleSidebar={toggleSidebar} onOpenSettings={() => setSettingsOpen(true)} />
+      <TitleBar
+        onToggleSidebar={toggleSidebar}
+        onToggleFileTree={toggleFileTree}
+        fileTreeOpen={fileTreeOpen}
+        onOpenSettings={() => setSettingsOpen(true)}
+      />
 
       <div className="flex min-h-0 flex-1">
         <AnimatePresence initial={false}>
@@ -247,17 +301,26 @@ export function AppShell() {
                 live={busy}
                 agent={activeSession?.agent}
                 model={activeSession?.model?.id}
+                permissions={pending}
+                onPermissionReply={replyPermission}
+                diffs={diffs}
+                onEditAndResend={editAndResend}
               />
+
+              <StatusBar
+                entries={entries}
+                busy={busy}
+                agent={activeSession?.agent}
+                model={activeSession?.model?.id}
+                onAbort={abort}
+              />
+
               <Composer
                 onSubmit={send}
                 onAbort={abort}
                 busy={busy}
                 disabled={!activeId}
-                placeholder={
-                  activeId
-                    ? "Ask opencode to do something…"
-                    : "Start a session to begin"
-                }
+                placeholder={activeId ? "Ask opencode to do something…" : "Start a session to begin"}
                 suggestFiles={(query) => client?.files(query, 12) ?? Promise.resolve([])}
                 suggestCommands={async () => {
                   if (!client) return [];
@@ -275,13 +338,23 @@ export function AppShell() {
             <Booting project={activeProject} onPickFolder={() => void pickFolder()} />
           )}
         </main>
+
+        <AnimatePresence initial={false}>
+          {fileTreeOpen && (
+            <motion.aside
+              key="files"
+              initial={{ width: 0 }}
+              animate={{ width: 260 }}
+              exit={{ width: 0 }}
+              className="shrink-0 overflow-hidden border-l border-line"
+            >
+              <FileTree />
+            </motion.aside>
+          )}
+        </AnimatePresence>
       </div>
 
-      <CommandPalette
-        open={paletteOpen}
-        commands={commands}
-        onClose={() => togglePalette(false)}
-      />
+      <CommandPalette open={paletteOpen} commands={commands} onClose={() => togglePalette(false)} />
       <SettingsDialog open={settingsOpen} onClose={() => setSettingsOpen(false)} />
     </div>
   );
@@ -318,11 +391,7 @@ function Booting({ project, onPickFolder }: { project: string | null; onPickFold
 function ServerFailure({ message, logs }: { message: string; logs: Array<{ message: string; at: number }> }) {
   return (
     <div className="scroll-area flex flex-1 flex-col items-center justify-center px-8 text-center">
-      <EmptyState
-        tone="danger"
-        title="opencode could not start"
-        body={message}
-      />
+      <EmptyState tone="danger" title="opencode could not start" body={message} />
       {logs.length > 0 && (
         <pre className="scroll-area mt-4 max-h-64 w-full max-w-[720px] overflow-auto rounded-[var(--radius-card)] border border-line bg-surface p-3 text-left font-mono text-[0.72rem] text-ink-faint">
           {logs.map((line) => line.message).join("\n")}

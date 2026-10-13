@@ -1,5 +1,5 @@
 import { describe, expect, it, vi } from "vitest";
-import { render, screen, waitFor } from "@testing-library/react";
+import { fireEvent, render, screen, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { Composer } from "@/components/chat/composer";
 
@@ -24,7 +24,7 @@ describe("Composer", () => {
     const { onSubmit, box } = setup();
     await user.type(box, "hello");
     await user.keyboard("{Enter}");
-    expect(onSubmit).toHaveBeenCalledWith("hello");
+    expect(onSubmit).toHaveBeenCalledWith({ text: "hello", attachments: [] });
   });
 
   it("inserts a newline on Shift+Enter without sending", async () => {
@@ -51,6 +51,51 @@ describe("Composer", () => {
     await user.type(box, "   ");
     await user.keyboard("{Enter}");
     expect(onSubmit).not.toHaveBeenCalled();
+  });
+
+  it("attaches a pasted file and sends it with the prompt", async () => {
+    const user = userEvent.setup();
+    const { onSubmit, box } = setup();
+
+    const file = new File([new Uint8Array([137, 80, 78, 71])], "shot.png", {
+      type: "image/png",
+    });
+    fireEvent.paste(box, { clipboardData: { files: [file], items: [] } });
+
+    await waitFor(() => expect(screen.getByText("shot.png")).toBeInTheDocument());
+
+    await user.type(box, "what is this");
+    await user.keyboard("{Enter}");
+
+    await waitFor(() => expect(onSubmit).toHaveBeenCalled());
+    const payload = onSubmit.mock.calls[0]![0];
+    expect(payload.text).toBe("what is this");
+    expect(payload.attachments).toHaveLength(1);
+    expect(payload.attachments[0]).toMatchObject({ name: "shot.png", mime: "image/png" });
+    expect(payload.attachments[0].dataUrl).toMatch(/^data:image\/png;base64,/);
+  });
+
+  it("refuses an unsupported file type and says why", async () => {
+    const { box } = setup();
+    const file = new File([new Uint8Array([0])], "tool.exe", {
+      type: "application/x-msdownload",
+    });
+    fireEvent.paste(box, { clipboardData: { files: [file], items: [] } });
+
+    await waitFor(() => expect(screen.getByText(/cannot be sent/i)).toBeInTheDocument());
+    expect(screen.queryByText("tool.exe")).not.toBeInTheDocument();
+  });
+
+  it("removes an attachment on request", async () => {
+    const user = userEvent.setup();
+    const { box } = setup();
+    const file = new File([new Uint8Array([1, 2, 3])], "notes.txt", { type: "text/plain" });
+
+    fireEvent.paste(box, { clipboardData: { files: [file], items: [] } });
+    await waitFor(() => expect(screen.getByText("notes.txt")).toBeInTheDocument());
+
+    await user.click(screen.getByLabelText("Remove notes.txt"));
+    await waitFor(() => expect(screen.queryByText("notes.txt")).not.toBeInTheDocument());
   });
 
   it("swaps send for abort while busy", async () => {

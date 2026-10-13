@@ -1,10 +1,14 @@
-import { useEffect, useLayoutEffect, useRef } from "react";
+import { useEffect, useLayoutEffect, useRef, useState } from "react";
 import { AnimatePresence, motion } from "motion/react";
+import { Pencil } from "lucide-react";
 import { PartView } from "./part-view";
+import { DiffSummary } from "./diff-view";
+import { PermissionCard } from "./permission-card";
 import { isStreaming, orderedParts, type MessageEntry } from "@/lib/opencode/thread";
+import { normaliseDiff, type NormalisedDiff } from "@/lib/diff";
+import type { PermissionReply, PendingPermission, UserMessage } from "@/lib/opencode/types";
 import { cn } from "@/lib/utils";
 
-/** True when this is the last message and the turn has not gone idle. */
 function usePinnedToBottom(dependency: unknown) {
   const ref = useRef<HTMLDivElement>(null);
   const pinned = useRef(true);
@@ -34,27 +38,55 @@ export function MessageThread({
   live,
   agent,
   model,
+  permissions = [],
+  onPermissionReply,
+  diffs = [],
+  onEditAndResend,
 }: {
   entries: MessageEntry[];
   live: boolean;
   agent?: string;
   model?: string;
+  permissions?: PendingPermission[];
+  onPermissionReply?(permission: PendingPermission, reply: PermissionReply): Promise<void>;
+  diffs?: NormalisedDiff[];
+  onEditAndResend?(messageID: string, text: string): Promise<void>;
 }) {
   const scrollRef = usePinnedToBottom(entries.length);
+  const normalised = diffs.map(normaliseDiff).filter((d): d is NormalisedDiff => d !== null);
 
   // Entries whose `message.updated` has not arrived yet render nothing; drop
   // them here so the rest of the component can assume `info` is present.
   const visible = entries.filter((entry) => entry.info !== null);
+  const lastAssistantId = [...visible].reverse().find((e) => e.info!.role === "assistant")?.info!.id;
 
   return (
     <div ref={scrollRef} className="scroll-area flex-1 px-5 pb-6" data-selectable>
       <div className="mx-auto flex w-full max-w-[760px] flex-col gap-1 pt-6">
+        {normalised.length > 0 && <DiffSummary diffs={normalised} />}
+
         <AnimatePresence initial={false}>
           {visible.map((entry, index) => (
             <Turn
               key={entry.info!.id}
               entry={entry}
               streaming={live && index === visible.length - 1}
+              showDiffAfter={
+                entry.info!.role === "assistant" && entry.info!.id === lastAssistantId
+                  ? normalised
+                  : []
+              }
+              onEditAndResend={onEditAndResend}
+            />
+          ))}
+        </AnimatePresence>
+
+        <AnimatePresence>
+          {permissions.map((permission) => (
+            <PermissionCard
+              key={permission.id}
+              permission={permission}
+              onReply={(reply) => onPermissionReply?.(permission, reply) ?? Promise.resolve()}
             />
           ))}
         </AnimatePresence>
@@ -70,10 +102,21 @@ export function MessageThread({
   );
 }
 
-function Turn({ entry, streaming }: { entry: MessageEntry; streaming: boolean }) {
+function Turn({
+  entry,
+  streaming,
+  showDiffAfter,
+  onEditAndResend,
+}: {
+  entry: MessageEntry;
+  streaming: boolean;
+  showDiffAfter: NormalisedDiff[];
+  onEditAndResend?(messageID: string, text: string): Promise<void>;
+}) {
   const { info } = entry;
   const parts = orderedParts(entry);
   const flowing = streaming || isStreaming(entry);
+  const [editing, setEditing] = useState(false);
 
   // A delta can arrive before `message.updated`. Nothing is rendered until we
   // know the message's role, but the parts are already buffered in the store.
@@ -81,34 +124,138 @@ function Turn({ entry, streaming }: { entry: MessageEntry; streaming: boolean })
 
   const assistant = info.role === "assistant";
   const createdAt = info.time?.created;
+  const text = userText(parts);
+  const canEdit = !assistant && text.length > 0 && onEditAndResend !== undefined;
 
   return (
     <motion.article
       initial={{ opacity: 0, y: 6 }}
       animate={{ opacity: 1, y: 0 }}
       transition={{ duration: 0.22, ease: [0.22, 1, 0.36, 1] }}
-      className={cn("py-2", assistant ? "pl-7" : "pr-7")}
+      className={cn("group py-2", assistant ? "pl-7" : "pr-7")}
     >
       {!assistant && (
         <div className="mb-1 flex items-baseline gap-2">
           <span className="text-[0.74rem] font-semibold uppercase tracking-[0.1em] text-accent">
             You
           </span>
-          <time className="text-[0.68rem] text-ink-ghost">
-            {formatTime(createdAt)}
-          </time>
+          <time className="text-[0.68rem] text-ink-ghost">{formatTime(createdAt)}</time>
+          {canEdit && !editing && (
+            <button
+              type="button"
+              onClick={() => setEditing(true)}
+              aria-label="Edit and resend"
+              className="ml-auto flex items-center gap-1 rounded px-1 py-0.5 text-[0.68rem] text-ink-ghost opacity-0 transition-opacity hover:text-ink-muted focus-visible:opacity-100 group-hover:opacity-100"
+            >
+              <Pencil size={10} />
+              Edit
+            </button>
+          )}
         </div>
       )}
 
-      <div className="text-[0.88rem] text-ink">
-        {parts.map((part) => (
-          <PartView key={part.id} part={part} streaming={flowing && part.type === "text"} />
-        ))}
-      </div>
+      {editing && onEditAndResend ? (
+        <EditBox
+          initial={text}
+          onCancel={() => setEditing(false)}
+          onSubmit={async (next) => {
+            setEditing(false);
+            await onEditAndResend(info.id, next);
+          }}
+        />
+      ) : (
+        <div className="text-[0.88rem] text-ink">
+          {parts.map((part) => (
+            <PartView key={part.id} part={part} streaming={flowing && part.type === "text"} />
+          ))}
+        </div>
+      )}
 
       {assistant && !parts.length && flowing && <TypingIndicator />}
+      {showDiffAfter.length > 0 && <DiffSummary diffs={showDiffAfter} />}
     </motion.article>
   );
+}
+
+function EditBox({
+  initial,
+  onSubmit,
+  onCancel,
+}: {
+  initial: string;
+  onSubmit(text: string): Promise<void>;
+  onCancel(): void;
+}) {
+  const [value, setValue] = useState(initial);
+  const [busy, setBusy] = useState(false);
+  const ref = useRef<HTMLTextAreaElement>(null);
+
+  useLayoutEffect(() => {
+    const node = ref.current;
+    if (!node) return;
+    node.style.height = "0px";
+    node.style.height = `${Math.min(node.scrollHeight, 320)}px`;
+    node.focus();
+    node.setSelectionRange(node.value.length, node.value.length);
+  }, []);
+
+  return (
+    <div className="overflow-hidden rounded-[var(--radius-card)] border border-accent/50 bg-surface">
+      <textarea
+        ref={ref}
+        value={value}
+        disabled={busy}
+        onChange={(event) => setValue(event.target.value)}
+        onKeyDown={(event) => {
+          if (event.key === "Escape") {
+            event.preventDefault();
+            onCancel();
+          }
+          if (event.key === "Enter" && (event.metaKey || event.ctrlKey)) {
+            event.preventDefault();
+            if (!value.trim() || busy) return;
+            setBusy(true);
+            void onSubmit(value.trim()).finally(() => setBusy(false));
+          }
+        }}
+        className="scroll-area max-h-[320px] w-full resize-none bg-transparent px-3 py-2.5 text-[0.88rem] leading-[1.55] text-ink outline-none"
+      />
+      <div className="flex items-center justify-between border-t border-line px-2.5 py-1.5">
+        <span className="text-[0.68rem] text-ink-ghost">
+          Rewinds the conversation and resends. ⌘↵ to send, esc to cancel.
+        </span>
+        <div className="flex gap-1.5">
+          <button
+            type="button"
+            onClick={onCancel}
+            disabled={busy}
+            className="rounded px-2 py-0.5 text-[0.74rem] text-ink-faint hover:bg-raised hover:text-ink"
+          >
+            Cancel
+          </button>
+          <button
+            type="button"
+            disabled={busy || !value.trim()}
+            onClick={() => {
+              setBusy(true);
+              void onSubmit(value.trim()).finally(() => setBusy(false));
+            }}
+            className="rounded bg-accent px-2 py-0.5 text-[0.74rem] font-medium text-accent-ink disabled:opacity-40"
+          >
+            {busy ? "Sending…" : "Resend"}
+          </button>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+function userText(parts: ReturnType<typeof orderedParts>): string {
+  return parts
+    .filter((part) => part.type === "text")
+    .map((part) => (part as { text: string }).text)
+    .join("\n")
+    .trim();
 }
 
 function TypingIndicator() {
@@ -130,3 +277,5 @@ function formatTime(ms?: number): string {
   if (!ms) return "";
   return new Date(ms).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" });
 }
+
+export type { UserMessage };

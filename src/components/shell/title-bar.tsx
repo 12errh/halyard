@@ -1,4 +1,4 @@
-import { PanelLeft, Settings2, Sparkles } from "lucide-react";
+import { PanelLeft, PanelRight, Settings2, Sparkles } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Pulse } from "@/components/ui/primitives";
 import { useServer } from "@/state/server";
@@ -13,9 +13,13 @@ import { projectName } from "@/lib/utils";
  */
 export function TitleBar({
   onToggleSidebar,
+  onToggleFileTree,
+  fileTreeOpen,
   onOpenSettings,
 }: {
   onToggleSidebar(): void;
+  onToggleFileTree(): void;
+  fileTreeOpen: boolean;
   onOpenSettings(): void;
 }) {
   const active = useServerProject();
@@ -51,6 +55,17 @@ export function TitleBar({
       <div className="flex-1" />
 
       <ServerIndicator />
+
+      <Button
+        variant="ghost"
+        size="icon-sm"
+        onClick={onToggleFileTree}
+        aria-label="Toggle file explorer"
+        aria-pressed={fileTreeOpen}
+        className={fileTreeOpen ? "bg-raised text-ink" : undefined}
+      >
+        <PanelRight size={14} />
+      </Button>
 
       <Button variant="ghost" size="icon-sm" onClick={onOpenSettings} aria-label="Settings">
         <Settings2 size={14} />

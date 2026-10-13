@@ -103,3 +103,96 @@ describe("OpencodeClient", () => {
     expect(JSON.parse(String(init.body))).toEqual({ title: "New" });
   });
 });
+
+describe("file listing", () => {
+  it("always sends the path key, using empty for the project root", async () => {
+    // The server answers 400 "Missing key [path]" when the key is absent.
+    const fetchImpl = vi.fn().mockResolvedValue(jsonResponse([]));
+    const client = new OpencodeClient("http://x", fetchImpl);
+
+    await client.listFiles();
+    expect(fetchImpl.mock.calls[0]![0]).toBe("http://x/file?path=");
+  });
+
+  it("encodes subdirectory paths", async () => {
+    const fetchImpl = vi.fn().mockResolvedValue(jsonResponse([]));
+    await new OpencodeClient("http://x", fetchImpl).listFiles("src/lib");
+    expect(fetchImpl.mock.calls[0]![0]).toBe("http://x/file?path=src%2Flib");
+  });
+});
+
+describe("permission replies", () => {
+  const permission = {
+    id: "per_1",
+    sessionID: "ses_1",
+    action: "bash",
+    resources: [],
+    version: 2 as const,
+    askedAt: 0,
+  };
+
+  it("uses the v2 endpoint for v2 requests", async () => {
+    const fetchImpl = vi.fn().mockResolvedValue(jsonResponse({}));
+    await new OpencodeClient("http://x", fetchImpl).replyPermission("ses_1", permission, "once");
+    expect(fetchImpl.mock.calls[0]![0]).toBe("http://x/api/session/ses_1/permission/per_1/reply");
+    expect(JSON.parse(String(fetchImpl.mock.calls[0]![1]?.body))).toEqual({ reply: "once" });
+  });
+
+  it("uses the v1 endpoint for v1 requests", async () => {
+    const fetchImpl = vi.fn().mockResolvedValue(jsonResponse(true));
+    await new OpencodeClient("http://x", fetchImpl).replyPermission("ses_1", { ...permission, version: 1 }, "reject");
+    expect(fetchImpl.mock.calls[0]![0]).toBe("http://x/session/ses_1/permissions/per_1");
+    expect(JSON.parse(String(fetchImpl.mock.calls[0]![1]?.body))).toEqual({ response: "reject" });
+  });
+
+  it("falls back to v1 when the v2 endpoint 404s", async () => {
+    // A v1-only server must not leave the agent blocked forever.
+    const fetchImpl = vi
+      .fn()
+      .mockResolvedValueOnce(jsonResponse({}, 404))
+      .mockResolvedValueOnce(jsonResponse(true));
+    await new OpencodeClient("http://x", fetchImpl).replyPermission("ses_1", permission, "once");
+    expect(fetchImpl).toHaveBeenCalledTimes(2);
+    expect(fetchImpl.mock.calls[1]![0]).toBe("http://x/session/ses_1/permissions/per_1");
+  });
+
+  it("does not fall back on other errors", async () => {
+    const fetchImpl = vi.fn().mockResolvedValue(jsonResponse({}, 500));
+    await expect(
+      new OpencodeClient("http://x", fetchImpl).replyPermission("ses_1", permission, "once"),
+    ).rejects.toBeInstanceOf(OpencodeError);
+    expect(fetchImpl).toHaveBeenCalledTimes(1);
+  });
+
+  it("unwraps the data envelope when listing", async () => {
+    const fetchImpl = vi.fn().mockResolvedValue(
+      jsonResponse({ data: [{ id: "per_1", sessionID: "ses_1", action: "bash", resources: ["ls"] }] }),
+    );
+    const pending = await new OpencodeClient("http://x", fetchImpl).listPermissions("ses_1");
+    expect(pending).toHaveLength(1);
+    expect(pending[0]).toMatchObject({ id: "per_1", action: "bash", version: 2 });
+  });
+
+  it("drops rows that cannot be rendered", async () => {
+    const fetchImpl = vi.fn().mockResolvedValue(jsonResponse({ data: [{ nope: true }] }));
+    expect(await new OpencodeClient("http://x", fetchImpl).listPermissions("ses_1")).toEqual([]);
+  });
+});
+
+describe("revert", () => {
+  it("posts the message id", async () => {
+    const fetchImpl = vi.fn().mockResolvedValue(jsonResponse({ id: "ses_1" }));
+    await new OpencodeClient("http://x", fetchImpl).revert("ses_1", "msg_9");
+    expect(fetchImpl.mock.calls[0]![0]).toBe("http://x/session/ses_1/revert");
+    expect(JSON.parse(String(fetchImpl.mock.calls[0]![1]?.body))).toEqual({ messageID: "msg_9" });
+  });
+
+  it("includes the part id when given", async () => {
+    const fetchImpl = vi.fn().mockResolvedValue(jsonResponse({ id: "ses_1" }));
+    await new OpencodeClient("http://x", fetchImpl).revert("ses_1", "msg_9", "prt_2");
+    expect(JSON.parse(String(fetchImpl.mock.calls[0]![1]?.body))).toEqual({
+      messageID: "msg_9",
+      partID: "prt_2",
+    });
+  });
+});

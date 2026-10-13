@@ -7,6 +7,7 @@
  */
 
 import type {
+  FileDiff,
   MessageInfo,
   Part,
   ServerEvent,
@@ -43,10 +44,12 @@ export interface ThreadState {
   order: string[];
   status: SessionStatus;
   error: string | null;
+  /** Latest file changes for the session, refreshed by `session.diff`. */
+  diffs: FileDiff[];
 }
 
 export function emptyThread(): ThreadState {
-  return { messages: {}, order: [], status: { type: "idle" }, error: null };
+  return { messages: {}, order: [], status: { type: "idle" }, error: null, diffs: [] };
 }
 
 function withMessage(
@@ -171,6 +174,12 @@ export function applyEvent(state: ThreadState, event: ServerEvent): ThreadState 
 
     case "session.idle":
       return { ...state, status: { type: "idle" } };
+
+    case "session.diff": {
+      const diff = (props as unknown as { diff: FileDiff[] }).diff;
+      // The server sends the full set, not an incremental patch.
+      return { ...state, diffs: Array.isArray(diff) ? diff : state.diffs };
+    }
 
     case "session.error": {
       const error = (props as unknown as { error: { name: string; data?: { message?: string } } }).error;

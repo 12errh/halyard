@@ -1,17 +1,36 @@
 import { useCallback, useEffect, useLayoutEffect, useRef, useState } from "react";
+import { AlertTriangle, ArrowUp, Paperclip, Square, X } from "lucide-react";
 import { AnimatePresence, motion } from "motion/react";
-import { ArrowUp, CornerDownLeft, Square } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Kbd } from "@/components/ui/primitives";
+import {
+  filesFromTransfer,
+  formatSize,
+  isImage,
+  newAttachmentId,
+  readAttachment,
+  screenAttachments,
+  toCandidates,
+  toFileParts,
+  type Attachment,
+  type BrowserFile,
+  type Rejection,
+} from "@/lib/attachments";
 import { cn } from "@/lib/utils";
 
-interface Suggestion {
-  value: string;
-  label: string;
-  hint?: string;
-  kind: "file" | "command";
+export interface ComposerSubmit {
+  text: string;
+  attachments: Attachment[];
 }
 
+/**
+ * Composer with @-file and /-command autocomplete plus drag-and-drop and paste
+ * attachments.
+ *
+ * Attachments travel as data URLs (what the opencode server accepts), guarded
+ * by an explicit size budget rather than letting a large file silently stall
+ * the turn.
+ */
 export function Composer({
   onSubmit,
   onAbort,
@@ -20,24 +39,51 @@ export function Composer({
   placeholder = "Ask opencode to do something…",
   suggestFiles,
   suggestCommands,
+  onPickFile,
 }: {
-  onSubmit(text: string): void;
+  onSubmit(payload: ComposerSubmit): void;
   onAbort(): void;
   busy: boolean;
   disabled?: boolean;
   placeholder?: string;
   suggestFiles(query: string): Promise<string[]>;
   suggestCommands(): Promise<Suggestion[]>;
+  onPickFile?(): void;
 }) {
   const [value, setValue] = useState("");
   const [caret, setCaret] = useState(0);
   const [items, setItems] = useState<Suggestion[]>([]);
   const [highlight, setHighlight] = useState(0);
+  const [attachments, setAttachments] = useState<Attachment[]>([]);
+  const [rejections, setRejections] = useState<Rejection[]>([]);
+  const [dragging, setDragging] = useState(false);
   const textarea = useRef<HTMLTextAreaElement>(null);
-  const boxRef = useRef<HTMLDivElement>(null);
 
-  // Trigger detection: the token the caret currently sits inside, if it starts
-  // with @ or / and has no whitespace yet.
+  const addFiles = useCallback(async (files: BrowserFile[]) => {
+    if (files.length === 0) return;
+    const { accepted, rejected } = screenAttachments(attachments, toCandidates(files));
+    setRejections(rejected);
+    if (accepted.length === 0) return;
+
+    const allowed = new Set(accepted.map((file) => file.name));
+    const read = await Promise.all(
+      files.filter((file) => allowed.has(file.name)).map((file) => readAttachment(file)),
+    );
+    setAttachments((prev) => [
+      ...prev,
+      ...read.map((value) => ({ ...value, id: newAttachmentId() })),
+    ]);
+  }, [attachments]);
+
+  const removeAttachment = (id: string) =>
+    setAttachments((prev) => {
+      const target = prev.find((a) => a.id === id);
+      if (target?.previewUrl) URL.revokeObjectURL(target.previewUrl);
+      return prev.filter((a) => a.id !== id);
+    });
+
+  // Trigger detection: the token the caret sits inside, if it starts with @ or /
+  // and has no whitespace yet.
   const trigger = (() => {
     const before = value.slice(0, caret);
     const match = /(^|\s)([@/])([^\s]*)$/.exec(before);
@@ -77,9 +123,9 @@ export function Composer({
     return () => {
       cancelled = true;
     };
-  }, [trigger?.sigil, trigger?.query]); // eslint-disable-line react-hooks/exhaustive-deps
+  }, [trigger?.sigil, trigger?.query]);
 
-  // Grow with content, up to a ceiling, then scroll.
+  // Grow with content up to a ceiling, then scroll.
   useLayoutEffect(() => {
     const node = textarea.current;
     if (!node) return;
@@ -108,11 +154,13 @@ export function Composer({
 
   const submit = useCallback(() => {
     const text = value.trim();
-    if (!text || disabled || busy) return;
-    onSubmit(text);
+    if ((!text && attachments.length === 0) || disabled || busy) return;
+    onSubmit({ text, attachments });
     setValue("");
+    setAttachments([]);
     setItems([]);
-  }, [value, busy, disabled, onSubmit]);
+    setRejections([]);
+  }, [value, attachments, busy, disabled, onSubmit]);
 
   const onKeyDown = (event: React.KeyboardEvent<HTMLTextAreaElement>) => {
     if (items.length > 0) {
@@ -138,7 +186,6 @@ export function Composer({
         return;
       }
     }
-
     if (event.key === "Enter" && !event.shiftKey) {
       event.preventDefault();
       submit();
@@ -149,12 +196,35 @@ export function Composer({
     <div className="px-5 pb-4">
       <div className="mx-auto w-full max-w-[760px]">
         <div
-          ref={boxRef}
+          onDragOver={(event) => {
+            event.preventDefault();
+            setDragging(true);
+          }}
+          onDragLeave={() => setDragging(false)}
+          onDrop={(event) => {
+            event.preventDefault();
+            setDragging(false);
+            void addFiles(filesFromTransfer(event.dataTransfer));
+          }}
           className={cn(
             "relative rounded-[var(--radius-panel)] border bg-surface transition-colors duration-150",
-            disabled ? "border-line opacity-50" : "border-line focus-within:border-accent/50",
+            dragging ? "border-accent bg-accent/[0.06]" : "border-line focus-within:border-accent/50",
+            disabled && "opacity-50",
           )}
         >
+          <AnimatePresence>
+            {dragging && (
+              <motion.div
+                initial={{ opacity: 0 }}
+                animate={{ opacity: 1 }}
+                exit={{ opacity: 0 }}
+                className="pointer-events-none absolute inset-0 z-10 flex items-center justify-center rounded-[var(--radius-panel)] border-2 border-dashed border-accent/60 text-[0.82rem] text-accent"
+              >
+                Drop files to attach
+              </motion.div>
+            )}
+          </AnimatePresence>
+
           <AnimatePresence>
             {items.length > 0 && (
               <motion.ul
@@ -162,7 +232,7 @@ export function Composer({
                 animate={{ opacity: 1, y: 0 }}
                 exit={{ opacity: 0, y: 4 }}
                 transition={{ duration: 0.14 }}
-                className="scroll-area absolute bottom-[calc(100%+8px)] left-0 max-h-64 w-full overflow-auto rounded-[var(--radius-card)] border border-line bg-overlay py-1 shadow-[var(--shadow-panel)]"
+                className="scroll-area absolute bottom-[calc(100%+8px)] left-0 z-20 max-h-64 w-full overflow-auto rounded-[var(--radius-card)] border border-line bg-overlay py-1 shadow-[var(--shadow-panel)]"
               >
                 {items.map((item, index) => (
                   <li key={`${item.kind}-${item.value ?? item.label}`}>
@@ -189,15 +259,75 @@ export function Composer({
             )}
           </AnimatePresence>
 
+          <AnimatePresence>
+            {(attachments.length > 0 || rejections.length > 0) && (
+              <motion.div
+                initial={{ height: 0, opacity: 0 }}
+                animate={{ height: "auto", opacity: 1 }}
+                exit={{ height: 0, opacity: 0 }}
+                className="overflow-hidden"
+              >
+                <div className="flex flex-wrap gap-1.5 px-2.5 pt-2.5">
+                  {attachments.map((attachment) => (
+                    <div
+                      key={attachment.id}
+                      className="group relative flex items-center gap-1.5 rounded-[6px] border border-line bg-raised py-1 pl-1.5 pr-6"
+                    >
+                      {isImage(attachment) && attachment.previewUrl ? (
+                        <img
+                          src={attachment.previewUrl}
+                          alt=""
+                          className="h-7 w-7 rounded-[4px] object-cover"
+                        />
+                      ) : (
+                        <Paperclip size={12} className="text-ink-faint" />
+                      )}
+                      <span className="max-w-[140px] truncate text-[0.74rem] text-ink-muted">
+                        {attachment.name}
+                      </span>
+                      <span className="tabular font-mono text-[0.66rem] text-ink-ghost">
+                        {formatSize(attachment.size)}
+                      </span>
+                      <button
+                        type="button"
+                        onClick={() => removeAttachment(attachment.id)}
+                        aria-label={`Remove ${attachment.name}`}
+                        className="absolute right-1 rounded p-0.5 text-ink-ghost opacity-0 transition-opacity hover:text-danger group-hover:opacity-100 focus-visible:opacity-100"
+                      >
+                        <X size={10} />
+                      </button>
+                    </div>
+                  ))}
+                </div>
+
+                {rejections.length > 0 && (
+                  <ul className="px-2.5 pb-1 pt-1.5">
+                    {rejections.map((rejection) => (
+                      <li key={rejection.name} className="flex items-center gap-1.5 text-[0.7rem] text-warn">
+                        <AlertTriangle size={11} />
+                        {rejection.message}
+                      </li>
+                    ))}
+                  </ul>
+                )}
+              </motion.div>
+            )}
+          </AnimatePresence>
+
           <textarea
             ref={textarea}
             value={value}
             disabled={disabled}
             placeholder={placeholder}
             rows={1}
-            onChange={(event) => {
-              setValue(event.target.value);
-              setCaret(event.target.selectionStart);
+            onChange={(event) => setValue(event.target.value)}
+            onPaste={(event) => {
+              // A pasted screenshot arrives as a file, not as text.
+              const files = filesFromTransfer(event.clipboardData);
+              if (files.length > 0) {
+                event.preventDefault();
+                void addFiles(files);
+              }
             }}
             onKeyUp={(event) => setCaret(event.currentTarget.selectionStart)}
             onClick={(event) => setCaret(event.currentTarget.selectionStart)}
@@ -212,6 +342,19 @@ export function Composer({
               <span className="text-line-strong">·</span>
               <Kbd>/</Kbd>
               <span>commands</span>
+              <span className="text-line-strong">·</span>
+              <span>drop or paste files</span>
+              {onPickFile && (
+                <Button
+                  variant="ghost"
+                  size="icon-sm"
+                  className="ml-1 h-5 w-5"
+                  onClick={onPickFile}
+                  aria-label="Attach a file"
+                >
+                  <Paperclip size={11} />
+                </Button>
+              )}
             </div>
 
             {busy ? (
@@ -223,7 +366,7 @@ export function Composer({
                 variant="primary"
                 size="icon-sm"
                 onClick={submit}
-                disabled={disabled || value.trim().length === 0}
+                disabled={disabled || (!value.trim() && attachments.length === 0)}
                 aria-label="Send"
               >
                 <ArrowUp size={13} />
@@ -233,19 +376,21 @@ export function Composer({
         </div>
 
         <p className="mt-1.5 flex items-center justify-center gap-1 text-[0.68rem] text-ink-ghost">
-          <Kbd>
-            <CornerDownLeft size={9} />
-          </Kbd>
-          send
-          <span className="text-line-strong">·</span>
           <Kbd>shift</Kbd>
           <span>+</span>
-          <Kbd>
-            <CornerDownLeft size={9} />
-          </Kbd>
-          newline
+          <Kbd>↵</Kbd>
+          <span>newline</span>
         </p>
       </div>
     </div>
   );
 }
+
+interface Suggestion {
+  value: string;
+  label: string;
+  hint?: string;
+  kind: "file" | "command";
+}
+
+export { toFileParts };
