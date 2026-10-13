@@ -59,6 +59,7 @@ export function Composer({
   const [rejections, setRejections] = useState<Rejection[]>([]);
   const [dragging, setDragging] = useState(false);
   const textarea = useRef<HTMLTextAreaElement>(null);
+  const fileInput = useRef<HTMLInputElement>(null);
 
   const addFiles = useCallback(async (files: BrowserFile[]) => {
     if (files.length === 0) return;
@@ -338,6 +339,31 @@ export function Composer({
 
           <div className="flex items-center justify-between gap-2 px-2 pb-2">
             <div className="flex min-w-0 flex-1 items-center gap-2">
+              <button
+                type="button"
+                onClick={() => fileInput.current?.click()}
+                disabled={disabled}
+                aria-label="Attach files"
+                title="Attach files"
+                className="shrink-0 rounded-full border border-line bg-surface p-1.5 text-ink-faint transition-colors hover:border-line-strong hover:text-ink disabled:opacity-40"
+              >
+                <Paperclip size={12} />
+              </button>
+
+              <input
+                ref={fileInput}
+                type="file"
+                multiple
+                className="hidden"
+                accept="image/*,text/*,application/json,application/xml,application/yaml,application/pdf,application/zip"
+                onChange={(event) => {
+                  const picked = Array.from(event.target.files ?? []) as BrowserFile[];
+                  void addFiles(picked);
+                  // Reset so re-picking the same file fires change again.
+                  event.target.value = "";
+                }}
+              />
+
               {modelPicker}
               <div className="hidden items-center gap-1.5 text-[0.68rem] text-ink-ghost sm:flex">
                 <Kbd>@</Kbd>

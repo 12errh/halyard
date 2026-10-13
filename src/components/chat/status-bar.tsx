@@ -64,7 +64,11 @@ export function StatusBar({
           transition={{ duration: 0.2, ease: [0.22, 1, 0.36, 1] }}
           className="overflow-hidden"
         >
-          <div className="mx-5 mb-2 w-full max-w-[760px]">
+          {/* Same outer padding + inner max-width as MessageThread, otherwise
+              the bar sits hard against the left edge while the thread is
+              centred, and the two read as misaligned. */}
+          <div className="px-5 pb-2">
+            <div className="mx-auto w-full max-w-[760px]">
             <div
               role="status"
               aria-live="polite"
@@ -91,6 +95,7 @@ export function StatusBar({
               <Button variant="danger" size="icon-sm" onClick={onAbort} aria-label="Stop">
                 <Square size={10} />
               </Button>
+            </div>
             </div>
           </div>
         </motion.div>

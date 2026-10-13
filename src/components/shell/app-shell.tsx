@@ -8,6 +8,7 @@ import { Composer, type ComposerSubmit } from "@/components/chat/composer";
 import { MessageThread } from "@/components/chat/message-thread";
 import { StatusBar } from "@/components/chat/status-bar";
 import { ModelPicker } from "@/components/chat/model-picker";
+import { ModePicker } from "@/components/chat/mode-picker";
 import { preloadHighlighter } from "@/components/chat/highlight";
 import { SessionTabs } from "@/components/shell/session-tabs";
 import { Sidebar } from "@/components/shell/sidebar";
@@ -27,6 +28,7 @@ import { useUi } from "@/state/ui";
 import { pendingFor, usePermissions } from "@/state/permissions";
 import { switchProject } from "@/actions/project";
 import { useModels } from "@/state/models";
+import { useMode } from "@/state/mode";
 import type { PermissionReply, PendingPermission, SessionStatus } from "@/lib/opencode/types";
 
 export function AppShell() {
@@ -61,6 +63,7 @@ export function AppShell() {
 
   const permissions = usePermissions((s) => s.bySession);
   const ingestPermission = usePermissions((s) => s.ingest);
+  const ingestSessionEvent = useSessions((s) => s.ingest);
   const syncPermissions = usePermissions((s) => s.sync);
   const resolvePermission = usePermissions((s) => s.resolve);
 
@@ -97,7 +100,13 @@ export function AppShell() {
     // One subscription, fanned out: the thread reducer owns messages, the
     // permission store owns prompts. A second connection would double every
     // event and race on reconnect.
-    connect(client!.eventsUrl(), ingestPermission);
+    // One subscription fanned out: the thread reducer owns messages, and the
+    // session and permission stores need the same events. Without the session
+    // store in this path, a title generated after the first turn never lands.
+    connect(client!.eventsUrl(), (event) => {
+      ingestPermission(event);
+      ingestSessionEvent(event);
+    });
 
     // The per-session hydration cache is scoped to a project; a new server means
     // a new project and every session needs reloading.
@@ -107,6 +116,13 @@ export function AppShell() {
     // server that will actually run the prompt.
     useModels.getState().setClient(client!);
     void useModels.getState().load();
+
+    // Plan/Build are primary agents; load them so the picker has something to
+    // show before the first prompt.
+    void client!
+      .agents()
+      .then((agents) => useMode.getState().setModes(agents))
+      .catch(() => undefined);
 
     void (async () => {
       const [all, statuses] = await Promise.all([
@@ -135,7 +151,7 @@ export function AppShell() {
       useThreads.getState().disconnect();
       useModels.getState().setClient(null);
     };
-  }, [phase, client, connect, setSessions, ingestPermission]);
+  }, [phase, client, connect, setSessions, ingestPermission, ingestSessionEvent]);
 
   // Hydrate a thread the first time its tab becomes active.
   const loadedFor = useRef(new Set<string>());
@@ -159,6 +175,7 @@ export function AppShell() {
       if (!client) return;
       try {
         const chosen = useModels.getState().selection;
+        const agent = useMode.getState().value;
         // Typing before any session exists is the common first-run path, so the
         // first prompt creates the session rather than being swallowed.
         let target = activeId;
@@ -172,6 +189,9 @@ export function AppShell() {
           // opencode takes the model per prompt, so a mid-conversation switch
           // applies to the next turn without forking the thread.
           ...(chosen ? { model: { providerID: chosen.providerID, modelID: chosen.modelID } } : {}),
+          // Plan/Build are agents; omitting this silently keeps whatever the
+          // session was created with.
+          ...(agent ? { agent } : {}),
           parts: [
             ...(text ? [{ type: "text" as const, text }] : []),
             ...toFileParts(attachments),
@@ -312,6 +332,9 @@ export function AppShell() {
   const modelSelection = useModels((s) => s.selection);
   const modelsLoading = useModels((s) => s.loading);
   const selectModel = useModels((s) => s.select);
+  const modes = useMode((s) => s.modes);
+  const modeValue = useMode((s) => s.value);
+  const setModeValue = useMode((s) => s.setValue);
   const diffs = (thread?.diffs ?? []).map(normaliseDiff).filter((d) => d !== null);
 
   return (
@@ -366,12 +389,15 @@ export function AppShell() {
                 placeholder="Ask opencode to do something…"
                 suggestFiles={(query) => client?.files(query, 12) ?? Promise.resolve([])}
                 modelPicker={
-                  <ModelPicker
-                    models={modelList}
-                    selection={modelSelection}
-                    loading={modelsLoading}
-                    onSelect={(next) => selectModel(next)}
-                  />
+                  <>
+                    <ModePicker modes={modes} value={modeValue} onChange={setModeValue} />
+                    <ModelPicker
+                      models={modelList}
+                      selection={modelSelection}
+                      loading={modelsLoading}
+                      onSelect={(next) => selectModel(next)}
+                    />
+                  </>
                 }
                 suggestCommands={async () => {
                   if (!client) return [];

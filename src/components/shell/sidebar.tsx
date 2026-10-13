@@ -1,24 +1,41 @@
 import { useEffect, useRef, useState } from "react";
 import { AnimatePresence, motion } from "motion/react";
-import { Check, ChevronDown, FolderOpen, FolderPlus, Plus, Search, Settings2, Trash2 } from "lucide-react";
+import {
+  Check,
+  ChevronDown,
+  FolderOpen,
+  FolderPlus,
+  GitBranch,
+  Pencil,
+  Plus,
+  Search,
+  Settings2,
+  Trash2,
+} from "lucide-react";
 import { open } from "@tauri-apps/plugin-dialog";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Kbd } from "@/components/ui/primitives";
 import { projectName, shortenPath, cn } from "@/lib/utils";
+import type { Session } from "@/lib/opencode/types";
 import { filterSessions, sortSessions, useSessions } from "@/state/sessions";
 import { useProjects } from "@/state/projects";
 import { switchProject } from "@/actions/project";
-import { useServer } from "@/state/server";
+import {
+  createSession as createSessionAction,
+  deleteSession,
+  forkSession,
+  renameSession,
+} from "@/actions/sessions";
 import { useThreads } from "@/state/threads";
-import { OpencodeClient } from "@/lib/opencode/client";
 
 export function Sidebar({ onOpenSettings }: { onOpenSettings(): void }) {
   const sessions = useSessions((s) => s.sessions);
   const query = useSessions((s) => s.query);
   const setQuery = useSessions((s) => s.setQuery);
   const openTab = useSessions((s) => s.openTab);
-  const remove = useSessions((s) => s.remove);
+  const [editingId, setEditingId] = useState<string | null>(null);
+  const [draftTitle, setDraftTitle] = useState("");
   const activeId = useSessions((s) => s.activeId);
   const busyId = useThreads((s) => s.busySessionId);
 
@@ -145,7 +162,12 @@ export function Sidebar({ onOpenSettings }: { onOpenSettings(): void }) {
             className="h-7 pl-7 text-[0.78rem]"
           />
         </div>
-        <Button variant="ghost" size="icon-sm" onClick={createSession} aria-label="New session">
+        <Button
+          variant="ghost"
+          size="icon-sm"
+          onClick={() => void createSessionAction()}
+          aria-label="New session"
+        >
           <Plus size={13} />
         </Button>
       </div>
@@ -166,7 +188,9 @@ export function Sidebar({ onOpenSettings }: { onOpenSettings(): void }) {
                     className={cnRow(selected)}
                     onClick={() => openTab(session.id)}
                     onAuxClick={(event) => {
-                      if (event.button === 1) remove(session.id);
+                      // Middle-click deletes, like a browser tab. Destructive, so
+                      // it goes through the same confirmed action as the button.
+                      if (event.button === 1) void deleteSession(session.id);
                     }}
                     role="button"
                     tabIndex={0}
@@ -180,21 +204,65 @@ export function Sidebar({ onOpenSettings }: { onOpenSettings(): void }) {
                       <span className="h-1.5 w-1.5 shrink-0 rounded-full bg-transparent" />
                     )}
 
-                    <span className="min-w-0 flex-1 truncate text-[0.79rem]">
-                      {session.title}
-                    </span>
+                    {editingId === session.id ? (
+                      <input
+                        autoFocus
+                        value={draftTitle}
+                        onChange={(event) => setDraftTitle(event.target.value)}
+                        onClick={(event) => event.stopPropagation()}
+                        onBlur={() => setEditingId(null)}
+                        onKeyDown={(event) => {
+                          if (event.key === "Escape") {
+                            event.stopPropagation();
+                            setEditingId(null);
+                          }
+                          if (event.key === "Enter") {
+                            event.stopPropagation();
+                            const next = draftTitle.trim();
+                            setEditingId(null);
+                            if (next && next !== session.title) {
+                              void renameSession(session.id, next);
+                            }
+                          }
+                        }}
+                        className="min-w-0 flex-1 rounded-[4px] border border-accent/60 bg-surface px-1 py-0.5 text-[0.79rem] text-ink outline-none"
+                      />
+                    ) : (
+                      <span className="min-w-0 flex-1 truncate text-[0.79rem]">
+                        {listTitle(session)}
+                      </span>
+                    )}
 
-                    <span
-                      role="button"
-                      tabIndex={-1}
-                      aria-label="Delete session"
-                      onClick={(event) => {
-                        event.stopPropagation();
-                        remove(session.id);
-                      }}
-                      className="shrink-0 rounded p-0.5 text-ink-ghost opacity-0 transition-opacity hover:text-danger group-hover:opacity-100"
-                    >
-                      <Trash2 size={11} />
+                    <span className="flex shrink-0 items-center gap-0.5 opacity-0 transition-opacity group-hover:opacity-100 focus-within:opacity-100">
+                      <RowAction
+                        label="Rename session"
+                        onClick={(event) => {
+                          event.stopPropagation();
+                          setDraftTitle(session.title);
+                          setEditingId(session.id);
+                        }}
+                      >
+                        <Pencil size={11} />
+                      </RowAction>
+                      <RowAction
+                        label="Fork session"
+                        onClick={(event) => {
+                          event.stopPropagation();
+                          void forkSession(session.id);
+                        }}
+                      >
+                        <GitBranch size={11} />
+                      </RowAction>
+                      <RowAction
+                        label="Delete session"
+                        danger
+                        onClick={(event) => {
+                          event.stopPropagation();
+                          void deleteSession(session.id);
+                        }}
+                      >
+                        <Trash2 size={11} />
+                      </RowAction>
                     </span>
                   </div>
                 </li>
@@ -204,6 +272,40 @@ export function Sidebar({ onOpenSettings }: { onOpenSettings(): void }) {
         )}
       </div>
     </aside>
+  );
+}
+
+/** opencode seeds new sessions with a timestamp title; hide that noise. */
+function listTitle(session: Session): string {
+  if (!session.title || session.title.startsWith("New session -")) return "Untitled session";
+  return session.title;
+}
+
+function RowAction({
+  children,
+  label,
+  onClick,
+  danger,
+}: {
+  children: React.ReactNode;
+  label: string;
+  onClick(event: React.MouseEvent): void;
+  danger?: boolean;
+}) {
+  return (
+    <span
+      role="button"
+      tabIndex={-1}
+      aria-label={label}
+      onClick={onClick}
+      className={
+        danger
+          ? "cursor-default rounded p-0.5 text-ink-ghost transition-colors hover:text-danger"
+          : "cursor-default rounded p-0.5 text-ink-ghost transition-colors hover:text-ink"
+      }
+    >
+      {children}
+    </span>
   );
 }
 
@@ -243,11 +345,4 @@ async function pickFolder() {
   await switchProject(selected);
 }
 
-async function createSession() {
-  const phase = useServer.getState().phase;
-  if (phase.kind !== "ready") return;
-  const client = new OpencodeClient(phase.info.url);
-  const session = await client.createSession();
-  useSessions.getState().upsert(session);
-  useSessions.getState().openTab(session.id);
-}
+

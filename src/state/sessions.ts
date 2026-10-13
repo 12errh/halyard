@@ -7,7 +7,7 @@
  */
 
 import { create } from "zustand";
-import type { Session } from "@/lib/opencode/types";
+import type { ServerEvent, Session } from "@/lib/opencode/types";
 import { truncate } from "@/lib/utils";
 
 interface SessionStore {
@@ -29,6 +29,15 @@ interface SessionStore {
   closeOthers(sessionId: string): void;
 
   setQuery(query: string): void;
+
+  /**
+   * Apply a server event to the list.
+   *
+   * Without this the title never appears: opencode names a session after the
+   * first turn and announces it via `session.updated`, so a list that is only
+   * loaded once stays stuck on the seeded "New session - <timestamp>".
+   */
+  ingest(event: ServerEvent): void;
 }
 
 export const useSessions = create<SessionStore>((set) => ({
@@ -96,6 +105,35 @@ export const useSessions = create<SessionStore>((set) => ({
   closeOthers: (sessionId) => set({ tabs: [sessionId], activeId: sessionId }),
 
   setQuery: (query) => set({ query }),
+
+  ingest: (event) =>
+    set((state) => {
+      if (event.type === "session.updated" || event.type === "session.created") {
+        const info = (event.properties as { info?: Session }).info;
+        if (!info?.id) return state;
+        const index = state.sessions.findIndex((s) => s.id === info.id);
+        if (index === -1) return { ...state, sessions: [info, ...state.sessions] };
+        const sessions = [...state.sessions];
+        sessions[index] = info;
+        return { ...state, sessions };
+      }
+
+      if (event.type === "session.deleted") {
+        const id = (event.properties as { sessionID?: string }).sessionID;
+        if (!id) return state;
+        const sessions = state.sessions.filter((s) => s.id !== id);
+        const tabs = state.tabs.filter((t) => t !== id);
+        if (sessions.length === state.sessions.length) return state;
+        return {
+          ...state,
+          sessions,
+          tabs,
+          activeId: state.activeId === id ? (tabs[tabs.length - 1] ?? null) : state.activeId,
+        };
+      }
+
+      return state;
+    }),
 }));
 
 // --- Selectors ------------------------------------------------------------
