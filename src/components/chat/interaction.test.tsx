@@ -1,5 +1,6 @@
-import { describe, expect, it } from "vitest";
-import { chooseScrollBehaviour } from "@/hooks/use-auto-scroll";
+import { beforeEach, describe, expect, it } from "vitest";
+import { act, render, screen } from "@testing-library/react";
+import { useAutoScroll } from "@/hooks/use-auto-scroll";
 import { childLabel, filterSessions, rootSessions } from "@/state/sessions";
 import { matches, type Suggestion } from "@/components/chat/composer";
 import type { Session } from "@/lib/opencode/types";
@@ -17,25 +18,119 @@ function session(overrides: Partial<Session> = {}): Session {
   };
 }
 
-describe("chooseScrollBehaviour", () => {
-  it("animates a short hop", () => {
-    expect(chooseScrollBehaviour(120, 600)).toBe("smooth");
+/** Renders the hook with its refs bound to real nodes, like the thread does. */
+function Harness() {
+  const hook = useAutoScroll();
+  return (
+    <div>
+      <div data-testid="scroller" ref={(n) => { hook.containerRef.current = n; }}>
+        <div data-testid="content" ref={(n) => { hook.contentRef.current = n; }} />
+      </div>
+      <span data-testid="state">{String(hook.stuck)}</span>
+      <button onClick={hook.scrollToBottom}>latest</button>
+    </div>
+  );
+}
+
+/**
+ * Regression guards for the view not following a stream.
+ *
+ * Following used to be keyed on a message count, which does not change while
+ * tokens stream, so the view sat still through an entire reply. jsdom does no
+ * layout, so scroll metrics are stubbed to make the behaviour observable.
+ */
+describe("auto scroll behaviour", () => {
+  let fireResize: () => void = () => {};
+
+  beforeEach(() => {
+    // A ResizeObserver we can fire on demand.
+    globalThis.ResizeObserver = class {
+      constructor(private callback: () => void) {
+        fireResize = () => this.callback();
+      }
+      observe() {}
+      disconnect() {}
+    } as unknown as typeof ResizeObserver;
   });
 
-  it("jumps when the distance is more than two viewports", () => {
-    // A smooth animation over a long distance never catches up with a fast
-    // token stream and would sit permanently behind it.
-    expect(chooseScrollBehaviour(2000, 600)).toBe("auto");
+  function stubMetrics(node: HTMLElement) {
+    let height = 1000;
+    Object.defineProperty(node, "scrollHeight", { get: () => height, configurable: true });
+    Object.defineProperty(node, "clientHeight", { get: () => 500, configurable: true });
+    node.scrollTo = function (options?: ScrollToOptions | number) {
+      node.scrollTop = typeof options === "number" ? options : (options?.top ?? 0);
+    };
+    return {
+      grow(to: number) {
+        height = to;
+      },
+      get top() {
+        return node.scrollTop;
+      },
+      set top(v: number) {
+        node.scrollTop = v;
+      },
+    };
+  }
+
+  it("follows content growth while pinned", () => {
+    render(<Harness />);
+    const scroller = screen.getByTestId("scroller");
+    const metrics = stubMetrics(scroller);
+    // Re-render so the effect re-runs against the stubbed node.
+    act(() => {
+      metrics.grow(2000);
+      fireResize();
+    });
+    expect(metrics.top).toBe(2000);
   });
 
-  it("animates right up to the two-viewport boundary", () => {
-    expect(chooseScrollBehaviour(1199, 600)).toBe("smooth");
-    expect(chooseScrollBehaviour(1201, 600)).toBe("auto");
+  it("stops following once the user scrolls away, and resumes on demand", () => {
+    render(<Harness />);
+    const scroller = screen.getByTestId("scroller");
+    const metrics = stubMetrics(scroller);
+
+    expect(screen.getByTestId("state")).toHaveTextContent("true");
+
+    // The user scrolls up: real input ends the programmatic guard.
+    act(() => {
+      metrics.top = 0;
+      scroller.dispatchEvent(new Event("wheel"));
+      scroller.dispatchEvent(new Event("scroll"));
+    });
+    expect(screen.getByTestId("state")).toHaveTextContent("false");
+
+    // Growth while unpinned must not yank the view back down.
+    act(() => {
+      metrics.grow(3000);
+      fireResize();
+    });
+    expect(metrics.top).toBe(0);
+
+    // The jump-to-latest control re-pins.
+    act(() => {
+      screen.getByRole("button", { name: "latest" }).click();
+    });
+    expect(screen.getByTestId("state")).toHaveTextContent("true");
+    expect(metrics.top).toBe(3000);
   });
 
-  it("does nothing when already at the bottom", () => {
-    expect(chooseScrollBehaviour(0, 600)).toBe("auto");
-    expect(chooseScrollBehaviour(-40, 600)).toBe("auto");
+  it("ignores scroll events caused by its own animation", () => {
+    render(<Harness />);
+    const scroller = screen.getByTestId("scroller");
+    const metrics = stubMetrics(scroller);
+
+    act(() => {
+      screen.getByRole("button", { name: "latest" }).click();
+    });
+
+    // Mid-animation the element is nowhere near the bottom; a naive
+    // implementation would read that as the user scrolling away and unpin.
+    act(() => {
+      metrics.top = 100;
+      scroller.dispatchEvent(new Event("scroll"));
+    });
+    expect(screen.getByTestId("state")).toHaveTextContent("true");
   });
 });
 

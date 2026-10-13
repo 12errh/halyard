@@ -275,6 +275,65 @@ export class OpencodeClient {
 
   // --- Permissions (v2 is current; v1 kept as a fallback) ------------------
 
+  // --- Questions (the agent asking the user back) -------------------------
+
+  /** Pending v2 questions, wrapped in `{ data }`. */
+  async listQuestions(sessionID: string): Promise<unknown[]> {
+    const raw = await this.request<{ data?: unknown[] }>(`/api/session/${sessionID}/question`);
+    return raw?.data ?? [];
+  }
+
+  /**
+   * Answer a question.
+   *
+   * v2 is preferred; a v1-only server answers 404 here, so fall back rather
+   * than leave the agent waiting on an answer that will never arrive.
+   */
+  async replyQuestion(
+    sessionID: string,
+    requestID: string,
+    answers: string[][],
+    version: 1 | 2 = 2,
+  ) {
+    if (version === 1) {
+      return this.request<boolean>(`/question/${requestID}/reply`, {
+        method: "POST",
+        body: JSON.stringify({ answers }),
+      });
+    }
+    try {
+      return await this.request<unknown>(
+        `/api/session/${sessionID}/question/${requestID}/reply`,
+        { method: "POST", body: JSON.stringify({ answers }) },
+      );
+    } catch (error) {
+      if (error instanceof OpencodeError && error.status === 404) {
+        return this.request<boolean>(`/question/${requestID}/reply`, {
+          method: "POST",
+          body: JSON.stringify({ answers }),
+        });
+      }
+      throw error;
+    }
+  }
+
+  async rejectQuestion(sessionID: string, requestID: string, version: 1 | 2 = 2) {
+    if (version === 1) {
+      return this.request<boolean>(`/question/${requestID}/reject`, { method: "POST" });
+    }
+    try {
+      return await this.request<unknown>(
+        `/api/session/${sessionID}/question/${requestID}/reject`,
+        { method: "POST" },
+      );
+    } catch (error) {
+      if (error instanceof OpencodeError && error.status === 404) {
+        return this.request<boolean>(`/question/${requestID}/reject`, { method: "POST" });
+      }
+      throw error;
+    }
+  }
+
   /** Pending v2 permission requests, wrapped in `{ data }`. */
   async listPermissions(sessionID: string): Promise<PendingPermission[]> {
     const raw = await this.request<{ data?: unknown[] }>(

@@ -1,101 +1,118 @@
-import { useCallback, useEffect, useLayoutEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 
 /**
- * Auto-scroll that follows new content without ever stealing the scrollbar.
+ * Auto-scroll that follows new content and still lets you scroll away.
  *
- * Two requirements pull against each other: the view should follow the stream,
- * and a user reading earlier output must never be yanked back. The solution is
- * a sentinel at the bottom plus IntersectionObserver — whether we are "at the
- * bottom" is observed rather than recomputed from scroll metrics on every
- * token, which would fight sub-pixel layout shifts during streaming.
+ * Two bugs this replaces:
+ *
+ * 1. Following was keyed on a message count, which does not change while tokens
+ *    stream — so the view sat still through a whole reply. Content height is
+ *    now observed with a ResizeObserver, which catches deltas, expanding tool
+ *    rows and diffs alike.
+ * 2. A programmatic smooth scroll fires scroll events mid-animation. Reading
+ *    "am I at the bottom" from those un-pinned the view permanently. Programmatic
+ *    scrolls are now marked, and any real input (wheel, touch, pointer) ends
+ *    that marking instantly so a manual scroll is never ignored.
  */
 
-/**
- * How to travel to the bottom.
- *
- * A smooth animation over a long distance never catches up with a fast token
- * stream and ends up permanently behind, so a big jump goes instantly and only
- * short hops animate.
- */
-export function chooseScrollBehaviour(distance: number, viewportHeight: number): ScrollBehavior {
-  if (distance <= 0) return "auto";
-  return distance > viewportHeight * 2 ? "auto" : "smooth";
-}
+/** How long a programmatic scroll suppresses the stickiness check. */
+const PROGRAMMATIC_MS = 700;
 
 export interface AutoScroll {
   containerRef: React.RefObject<HTMLDivElement | null>;
-  /** Attach to a zero-height element at the very end of the scroll content. */
-  endRef: React.RefObject<HTMLDivElement | null>;
-  /** True while the view is pinned to the newest content. */
+  /** Attach to the scrolling content itself, so its height can be observed. */
+  contentRef: React.RefObject<HTMLDivElement | null>;
+  /** True while pinned to the newest content. */
   stuck: boolean;
-  /** Jump back to the newest content, resuming following. */
   scrollToBottom(): void;
 }
 
-export function useAutoScroll(dependency: unknown): AutoScroll {
+export function useAutoScroll(): AutoScroll {
   const containerRef = useRef<HTMLDivElement>(null);
-  const endRef = useRef<HTMLDivElement>(null);
+  const contentRef = useRef<HTMLDivElement>(null);
   const [stuck, setStuck] = useState(true);
 
-  const scrollToBottom = useCallback(() => {
-    const node = containerRef.current;
-    if (!node) return;
-    const distance = node.scrollHeight - node.scrollTop - node.clientHeight;
-    const behavior = chooseScrollBehaviour(distance, node.clientHeight);
-    if (typeof node.scrollTo === "function") {
-      node.scrollTo({ top: node.scrollHeight, behavior });
-    } else {
-      node.scrollTop = node.scrollHeight;
-    }
-    setStuck(true);
+  // Refs, not state: these change on every frame of a scroll animation and
+  // must not trigger a render.
+  const programmaticUntil = useRef(0);
+  const stuckRef = useRef(true);
+
+  const setStuckBoth = useCallback((value: boolean) => {
+    stuckRef.current = value;
+    setStuck(value);
   }, []);
 
-  // Follow new content, but only while pinned.
-  useLayoutEffect(() => {
-    const node = containerRef.current;
-    if (!node || !stuck) return;
-    const distance = node.scrollHeight - node.scrollTop - node.clientHeight;
-    if (distance <= 0) return;
-    if (typeof node.scrollTo === "function") {
-      node.scrollTo({ top: node.scrollHeight, behavior: chooseScrollBehaviour(distance, node.clientHeight) });
-    } else {
-      node.scrollTop = node.scrollHeight;
-    }
-  }, [dependency, stuck]);
+  const isProgrammatic = () => Date.now() < programmaticUntil.current;
 
+  const distanceFromBottom = useCallback(() => {
+    const node = containerRef.current;
+    if (!node) return 0;
+    return node.scrollHeight - node.scrollTop - node.clientHeight;
+  }, []);
+
+  const scrollToBottom = useCallback(
+    (behavior: ScrollBehavior = "smooth") => {
+      const node = containerRef.current;
+      if (!node) return;
+      programmaticUntil.current = Date.now() + PROGRAMMATIC_MS;
+      if (typeof node.scrollTo === "function") {
+        node.scrollTo({ top: node.scrollHeight, behavior });
+      } else {
+        node.scrollTop = node.scrollHeight;
+      }
+      setStuckBoth(true);
+    },
+    [setStuckBoth],
+  );
+
+  // Follow content growth — tokens, tool rows, diffs — while pinned.
   useEffect(() => {
-    const sentinel = endRef.current;
-    const node = containerRef.current;
-    if (!sentinel || !node) return;
+    const content = contentRef.current;
+    const container = containerRef.current;
+    if (!content || !container) return;
 
-    // Without IntersectionObserver (jsdom, very old webviews) stay pinned and
-    // rely on the scroll listener below as a fallback.
-    if (typeof IntersectionObserver === "undefined") return;
+    if (typeof ResizeObserver === "undefined") return;
 
-    const observer = new IntersectionObserver(
-      (entries) => {
-        const entry = entries[entries.length - 1];
-        if (entry) setStuck(entry.isIntersecting);
-      },
-      // A thin band at the very bottom counts as "there".
-      { root: node, rootMargin: "0px 0px 48px 0px", threshold: 0 },
-    );
-    observer.observe(sentinel);
+    const observer = new ResizeObserver(() => {
+      if (!stuckRef.current) return;
+      const node = containerRef.current;
+      if (!node) return;
+      // Follow instantly. Animating here would restart the animation on every
+      // token and never actually arrive.
+      programmaticUntil.current = Date.now() + PROGRAMMATIC_MS;
+      node.scrollTop = node.scrollHeight;
+    });
+    observer.observe(content);
     return () => observer.disconnect();
   }, []);
 
-  // Fallback for environments without IntersectionObserver, and a safety net
-  // for the moment the user scrolls away from the very bottom.
+  // Track manual scrolling. Ignored while we are animating ourselves.
   useEffect(() => {
     const node = containerRef.current;
     if (!node) return;
-    const onScroll = () => {
-      const distance = node.scrollHeight - node.scrollTop - node.clientHeight;
-      setStuck(distance < 48);
-    };
-    node.addEventListener("scroll", onScroll, { passive: true });
-    return () => node.removeEventListener("scroll", onScroll);
-  }, []);
 
-  return { containerRef, endRef, stuck, scrollToBottom };
+    const onScroll = () => {
+      if (isProgrammatic()) return;
+      setStuckBoth(distanceFromBottom() < 64);
+    };
+    const endProgrammatic = () => {
+      // Real input means the user is driving; stop second-guessing them.
+      programmaticUntil.current = 0;
+      setStuckBoth(distanceFromBottom() < 64);
+    };
+
+    node.addEventListener("scroll", onScroll, { passive: true });
+    node.addEventListener("wheel", endProgrammatic, { passive: true });
+    node.addEventListener("touchstart", endProgrammatic, { passive: true });
+    node.addEventListener("pointerdown", endProgrammatic, { passive: true });
+
+    return () => {
+      node.removeEventListener("scroll", onScroll);
+      node.removeEventListener("wheel", endProgrammatic);
+      node.removeEventListener("touchstart", endProgrammatic);
+      node.removeEventListener("pointerdown", endProgrammatic);
+    };
+  }, [distanceFromBottom, setStuckBoth]);
+
+  return { containerRef, contentRef, stuck, scrollToBottom: () => scrollToBottom("smooth") };
 }

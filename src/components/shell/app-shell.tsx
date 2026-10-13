@@ -31,6 +31,13 @@ import { switchProject } from "@/actions/project";
 import { useModels } from "@/state/models";
 import { useMode } from "@/state/mode";
 import { useSystem } from "@/state/system";
+import {
+  normaliseQuestion,
+  pendingFor as pendingQuestionsFor,
+  useQuestions,
+  type PendingQuestion,
+  type Question,
+} from "@/state/questions";
 import type { PermissionReply, PendingPermission, SessionStatus } from "@/lib/opencode/types";
 
 export function AppShell() {
@@ -67,6 +74,10 @@ export function AppShell() {
   const ingestPermission = usePermissions((s) => s.ingest);
   const ingestSessionEvent = useSessions((s) => s.ingest);
   const ingestSystemEvent = useSystem((s) => s.ingest);
+  const ingestQuestionEvent = useQuestions((s) => s.ingest);
+  const syncQuestions = useQuestions((s) => s.sync);
+  const resolveQuestion = useQuestions((s) => s.resolve);
+  const questionsState = useQuestions((s) => s.bySession);
   const syncPermissions = usePermissions((s) => s.sync);
   const resolvePermission = usePermissions((s) => s.resolve);
 
@@ -112,6 +123,7 @@ export function AppShell() {
       // Keeps providers, models, agents and MCP status live: connecting a
       // provider or adding a server updates the settings tabs with no reload.
       ingestSystemEvent(event);
+      ingestQuestionEvent(event);
     });
 
     // The per-session hydration cache is scoped to a project; a new server means
@@ -165,6 +177,7 @@ export function AppShell() {
     ingestPermission,
     ingestSessionEvent,
     ingestSystemEvent,
+    ingestQuestionEvent,
   ]);
 
   // Hydrate a thread the first time its tab becomes active.
@@ -177,10 +190,18 @@ export function AppShell() {
       const entries = await client.messages(activeId).catch(() => []);
       load(activeId, entries);
       // Permissions asked before this tab was opened still need showing.
-      const pending = await client.listPermissions(activeId).catch(() => []);
+      const [pending, asked] = await Promise.all([
+        client.listPermissions(activeId).catch(() => []),
+        client.listQuestions(activeId).catch(() => []),
+      ]);
       if (pending.length > 0) syncPermissions(activeId, pending);
+      // A question asked before this tab was opened still needs answering.
+      const restored = asked
+        .map((row) => toPendingQuestion(row, activeId))
+        .filter((row): row is PendingQuestion => row !== null);
+      if (restored.length > 0) syncQuestions(restored);
     })();
-  }, [activeId, client, load, syncPermissions]);
+  }, [activeId, client, load, syncPermissions, syncQuestions]);
 
   // --- Actions -------------------------------------------------------------
 
@@ -239,6 +260,24 @@ export function AppShell() {
       await client.sendPrompt(activeId, { parts: [{ type: "text", text }] });
     },
     [client, activeId],
+  );
+
+  const answerQuestion = useCallback(
+    async (pending: PendingQuestion, answers: string[][]) => {
+      if (!client) throw new Error("not connected to opencode");
+      await client.replyQuestion(pending.sessionID, pending.id, answers, pending.version);
+      resolveQuestion(pending.sessionID, pending.id);
+    },
+    [client, resolveQuestion],
+  );
+
+  const skipQuestion = useCallback(
+    async (pending: PendingQuestion) => {
+      if (!client) return;
+      await client.rejectQuestion(pending.sessionID, pending.id, pending.version);
+      resolveQuestion(pending.sessionID, pending.id);
+    },
+    [client, resolveQuestion],
   );
 
   const pickFolder = useCallback(async () => {
@@ -342,6 +381,7 @@ export function AppShell() {
   const busy = busyId !== null && status.type === "busy";
   const activeSession = sessions.find((s) => s.id === activeId);
   const pending = pendingFor({ bySession: permissions }, activeId);
+  const askedQuestions = pendingQuestionsFor({ bySession: questionsState }, activeId);
   const modelList = useModels((s) => s.models);
   const modelSelection = useModels((s) => s.selection);
   const modelsLoading = useModels((s) => s.loading);
@@ -383,6 +423,9 @@ export function AppShell() {
                 model={activeSession?.model?.id}
                 permissions={pending}
                 onPermissionReply={replyPermission}
+                questions={askedQuestions}
+                onQuestionAnswer={answerQuestion}
+                onQuestionSkip={skipQuestion}
                 diffs={diffs}
                 onEditAndResend={editAndResend}
               />
@@ -499,3 +542,23 @@ function ServerFailure({ message, logs }: { message: string; logs: Array<{ messa
   );
 }
 
+/** Adapt a raw question row into the UI's single shape, or reject it. */
+function toPendingQuestion(raw: unknown, sessionID: string): PendingQuestion | null {
+  if (!raw || typeof raw !== "object") return null;
+  const record = raw as Record<string, unknown>;
+  const id = typeof record.id === "string" ? record.id : null;
+  if (!id) return null;
+
+  const questions: Question[] = (Array.isArray(record.questions) ? record.questions : [])
+    .map(normaliseQuestion)
+    .filter((question): question is Question => question !== null);
+  if (questions.length === 0) return null;
+
+  return {
+    id,
+    sessionID: typeof record.sessionID === "string" ? record.sessionID : sessionID,
+    questions,
+    version: 2,
+    askedAt: Date.now(),
+  };
+}

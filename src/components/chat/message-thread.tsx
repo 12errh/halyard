@@ -5,9 +5,11 @@ import { useAutoScroll } from "@/hooks/use-auto-scroll";
 import { PartView } from "./part-view";
 import { DiffSummary } from "./diff-view";
 import { PermissionCard } from "./permission-card";
+import { QuestionCard } from "./question-card";
 import { isStreaming, orderedParts, type MessageEntry } from "@/lib/opencode/thread";
 import { normaliseDiff, type NormalisedDiff } from "@/lib/diff";
 import type { PermissionReply, PendingPermission, UserMessage } from "@/lib/opencode/types";
+import type { PendingQuestion } from "@/state/questions";
 import { cn } from "@/lib/utils";
 
 export function MessageThread({
@@ -17,6 +19,9 @@ export function MessageThread({
   model,
   permissions = [],
   onPermissionReply,
+  questions = [],
+  onQuestionAnswer,
+  onQuestionSkip,
   diffs = [],
   onEditAndResend,
 }: {
@@ -26,11 +31,14 @@ export function MessageThread({
   model?: string;
   permissions?: PendingPermission[];
   onPermissionReply?(permission: PendingPermission, reply: PermissionReply): Promise<void>;
+  questions?: PendingQuestion[];
+  onQuestionAnswer?(pending: PendingQuestion, answers: string[][]): Promise<void>;
+  onQuestionSkip?(pending: PendingQuestion): Promise<void>;
   diffs?: NormalisedDiff[];
   onEditAndResend?(messageID: string, text: string): Promise<void>;
 }) {
   // Follow the stream, but never fight a user who has scrolled up.
-  const { containerRef, endRef, stuck, scrollToBottom } = useAutoScroll(entries.length);
+  const { containerRef, contentRef, stuck, scrollToBottom } = useAutoScroll();
   const normalised = diffs.map(normaliseDiff).filter((d): d is NormalisedDiff => d !== null);
 
   // Entries whose `message.updated` has not arrived yet render nothing; drop
@@ -41,7 +49,12 @@ export function MessageThread({
   return (
     <div className="relative flex min-h-0 flex-1 flex-col">
       <div ref={containerRef} className="scroll-area flex-1 px-5 pb-6" data-selectable>
-        <div className="mx-auto flex w-full max-w-[760px] flex-col gap-1 pt-6">
+        {/* The observed element: its height changes on every token, tool row
+            and diff, which is what triggers following. */}
+        <div
+          ref={contentRef}
+          className="mx-auto flex w-full max-w-[760px] flex-col gap-1 pt-6"
+        >
         {normalised.length > 0 && <DiffSummary diffs={normalised} />}
 
         <AnimatePresence initial={false}>
@@ -56,6 +69,19 @@ export function MessageThread({
                   : []
               }
               onEditAndResend={onEditAndResend}
+            />
+          ))}
+        </AnimatePresence>
+
+        {/* Questions wait above permissions: the agent cannot proceed until one
+            is answered, so it should be the first thing read. */}
+        <AnimatePresence>
+          {questions.map((pending) => (
+            <QuestionCard
+              key={pending.id}
+              pending={pending}
+              onSubmit={(answers) => onQuestionAnswer?.(pending, answers) ?? Promise.resolve()}
+              onReject={() => onQuestionSkip?.(pending) ?? Promise.resolve()}
             />
           ))}
         </AnimatePresence>
@@ -77,8 +103,6 @@ export function MessageThread({
           </div>
         )}
 
-        {/* Sentinel: being visible means we are pinned to the newest content. */}
-        <div ref={endRef} aria-hidden className="h-px w-full shrink-0" />
         </div>
       </div>
 
