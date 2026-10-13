@@ -1,6 +1,7 @@
-import { useEffect, useLayoutEffect, useRef, useState } from "react";
+import { useLayoutEffect, useRef, useState } from "react";
 import { AnimatePresence, motion } from "motion/react";
-import { Pencil } from "lucide-react";
+import { ArrowDown, Pencil } from "lucide-react";
+import { useAutoScroll } from "@/hooks/use-auto-scroll";
 import { PartView } from "./part-view";
 import { DiffSummary } from "./diff-view";
 import { PermissionCard } from "./permission-card";
@@ -8,30 +9,6 @@ import { isStreaming, orderedParts, type MessageEntry } from "@/lib/opencode/thr
 import { normaliseDiff, type NormalisedDiff } from "@/lib/diff";
 import type { PermissionReply, PendingPermission, UserMessage } from "@/lib/opencode/types";
 import { cn } from "@/lib/utils";
-
-function usePinnedToBottom(dependency: unknown) {
-  const ref = useRef<HTMLDivElement>(null);
-  const pinned = useRef(true);
-
-  useEffect(() => {
-    const node = ref.current;
-    if (!node) return;
-    const onScroll = () => {
-      // 48px of slack: the moment a user scrolls up to read, stop yanking them
-      // back down as tokens arrive.
-      pinned.current = node.scrollHeight - node.scrollTop - node.clientHeight < 48;
-    };
-    node.addEventListener("scroll", onScroll, { passive: true });
-    return () => node.removeEventListener("scroll", onScroll);
-  }, []);
-
-  useLayoutEffect(() => {
-    const node = ref.current;
-    if (node && pinned.current) node.scrollTop = node.scrollHeight;
-  }, [dependency]);
-
-  return ref;
-}
 
 export function MessageThread({
   entries,
@@ -52,7 +29,8 @@ export function MessageThread({
   diffs?: NormalisedDiff[];
   onEditAndResend?(messageID: string, text: string): Promise<void>;
 }) {
-  const scrollRef = usePinnedToBottom(entries.length);
+  // Follow the stream, but never fight a user who has scrolled up.
+  const { containerRef, endRef, stuck, scrollToBottom } = useAutoScroll(entries.length);
   const normalised = diffs.map(normaliseDiff).filter((d): d is NormalisedDiff => d !== null);
 
   // Entries whose `message.updated` has not arrived yet render nothing; drop
@@ -61,8 +39,9 @@ export function MessageThread({
   const lastAssistantId = [...visible].reverse().find((e) => e.info!.role === "assistant")?.info!.id;
 
   return (
-    <div ref={scrollRef} className="scroll-area flex-1 px-5 pb-6" data-selectable>
-      <div className="mx-auto flex w-full max-w-[760px] flex-col gap-1 pt-6">
+    <div className="relative flex min-h-0 flex-1 flex-col">
+      <div ref={containerRef} className="scroll-area flex-1 px-5 pb-6" data-selectable>
+        <div className="mx-auto flex w-full max-w-[760px] flex-col gap-1 pt-6">
         {normalised.length > 0 && <DiffSummary diffs={normalised} />}
 
         <AnimatePresence initial={false}>
@@ -97,7 +76,28 @@ export function MessageThread({
             {agent && model ? `${agent} · ${model}` : "Working…"}
           </div>
         )}
+
+        {/* Sentinel: being visible means we are pinned to the newest content. */}
+        <div ref={endRef} aria-hidden className="h-px w-full shrink-0" />
+        </div>
       </div>
+
+      <AnimatePresence>
+        {!stuck && (
+          <motion.button
+            type="button"
+            onClick={scrollToBottom}
+            initial={{ opacity: 0, y: 6 }}
+            animate={{ opacity: 1, y: 0 }}
+            exit={{ opacity: 0, y: 4 }}
+            transition={{ duration: 0.18 }}
+            className="absolute bottom-3 left-1/2 z-10 flex -translate-x-1/2 items-center gap-1.5 rounded-full border border-line-strong bg-overlay px-3 py-1.5 text-[0.75rem] text-ink-muted shadow-[var(--shadow-panel)] transition-colors hover:text-ink"
+          >
+            <ArrowDown size={12} />
+            Jump to latest
+          </motion.button>
+        )}
+      </AnimatePresence>
     </div>
   );
 }

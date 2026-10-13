@@ -153,7 +153,11 @@ export class OpencodeClient {
   }
 
   commands() {
-    return this.request<Array<{ name: string; description?: string }>>("/command");
+    // `source` distinguishes built-in commands from user skills, so the
+    // palette can group them under their own headings.
+    return this.request<Array<{ name: string; description?: string; source?: string }>>(
+      "/command",
+    );
   }
 
   /**

@@ -3,10 +3,12 @@ import { AnimatePresence, motion } from "motion/react";
 import {
   Check,
   ChevronDown,
+  ChevronRight,
   FolderOpen,
   FolderPlus,
   GitBranch,
   Pencil,
+  Sparkles,
   Plus,
   Search,
   Settings2,
@@ -18,13 +20,19 @@ import { Input } from "@/components/ui/input";
 import { Kbd } from "@/components/ui/primitives";
 import { projectName, shortenPath, cn } from "@/lib/utils";
 import type { Session } from "@/lib/opencode/types";
-import { filterSessions, sortSessions, useSessions } from "@/state/sessions";
+import {
+  childLabel,
+  filterSessions,
+  sortSessions,
+  useSessions,
+} from "@/state/sessions";
 import { useProjects } from "@/state/projects";
 import { switchProject } from "@/actions/project";
 import {
   createSession as createSessionAction,
   deleteSession,
   forkSession,
+  loadChildSessions,
   renameSession,
 } from "@/actions/sessions";
 import { useThreads } from "@/state/threads";
@@ -36,6 +44,11 @@ export function Sidebar({ onOpenSettings }: { onOpenSettings(): void }) {
   const openTab = useSessions((s) => s.openTab);
   const [editingId, setEditingId] = useState<string | null>(null);
   const [draftTitle, setDraftTitle] = useState("");
+  const children = useSessions((s) => s.children);
+  const expandedParents = useSessions((s) => s.expandedParents);
+  const toggleParent = useSessions((s) => s.toggleParent);
+  // Roots come from `sessions`; subagent runs are fetched lazily per parent so
+  // opening the app never walks every delegated task up front.
   const activeId = useSessions((s) => s.activeId);
   const busyId = useThreads((s) => s.busySessionId);
 
@@ -198,6 +211,27 @@ export function Sidebar({ onOpenSettings }: { onOpenSettings(): void }) {
                       if (event.key === "Enter") openTab(session.id);
                     }}
                   >
+                    <button
+                      type="button"
+                      aria-label={
+                        expandedParents[session.id] ? "Hide subagents" : "Show subagents"
+                      }
+                      onClick={(event) => {
+                        event.stopPropagation();
+                        toggleParent(session.id);
+                        void loadChildSessions(session.id);
+                      }}
+                      className="shrink-0 rounded p-0.5 text-ink-ghost transition-colors hover:text-ink"
+                    >
+                      <ChevronRight
+                        size={11}
+                        className={cn(
+                          "transition-transform duration-150",
+                          expandedParents[session.id] && "rotate-90",
+                        )}
+                      />
+                    </button>
+
                     {busyId === session.id ? (
                       <span className="h-1.5 w-1.5 shrink-0 rounded-full bg-live" />
                     ) : (
@@ -265,6 +299,52 @@ export function Sidebar({ onOpenSettings }: { onOpenSettings(): void }) {
                       </RowAction>
                     </span>
                   </div>
+
+                  <AnimatePresence initial={false}>
+                    {expandedParents[session.id] && (
+                      <motion.ul
+                        initial={{ height: 0, opacity: 0 }}
+                        animate={{ height: "auto", opacity: 1 }}
+                        exit={{ height: 0, opacity: 0 }}
+                        transition={{ duration: 0.18, ease: [0.22, 1, 0.36, 1] }}
+                        className="overflow-hidden"
+                      >
+                        {(children[session.id] ?? []).length === 0 ? (
+                          <li className="py-1 pl-7 text-[0.72rem] text-ink-ghost">
+                            No subagent runs
+                          </li>
+                        ) : (
+                          (children[session.id] ?? []).map((child) => (
+                            <li key={child.id}>
+                              <div
+                                role="button"
+                                tabIndex={0}
+                                onClick={() => openTab(child.id)}
+                                onKeyDown={(event) => {
+                                  if (event.key === "Enter") openTab(child.id);
+                                }}
+                                title={childLabel(child)}
+                                className="flex cursor-default items-center gap-1.5 rounded-[6px] py-1 pl-7 pr-2 text-left transition-colors hover:bg-raised/60"
+                              >
+                                <Sparkles size={10} className="shrink-0 text-accent/70" />
+                                <span
+                                  className={cn(
+                                    "min-w-0 flex-1 truncate text-[0.74rem]",
+                                    selected === false ? "text-ink-faint" : "text-ink-muted",
+                                  )}
+                                >
+                                  {childLabel(child)}
+                                </span>
+                                <span className="shrink-0 rounded-full border border-accent/25 px-1 py-px text-[0.56rem] uppercase tracking-wider text-accent/80">
+                                  agent
+                                </span>
+                              </div>
+                            </li>
+                          ))
+                        )}
+                      </motion.ul>
+                    )}
+                  </AnimatePresence>
                 </li>
               );
             })}

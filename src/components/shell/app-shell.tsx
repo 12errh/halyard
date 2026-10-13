@@ -406,6 +406,7 @@ export function AppShell() {
                     value: c.name,
                     label: c.name,
                     hint: c.description,
+                    source: (c as { source?: string }).source,
                     kind: "command" as const,
                   }));
                 }}

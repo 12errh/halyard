@@ -113,11 +113,11 @@ export function Composer({
               hint: path,
               kind: "file" as const,
             }))
-          : (await suggestCommands()).filter(
-              (c) => !trigger.query || c.label.toLowerCase().startsWith(trigger.query.toLowerCase()),
-            );
+          : (await suggestCommands()).filter((c) => matches(c, trigger.query));
       if (!cancelled) {
-        setItems(found.slice(0, 8));
+        // No cap: a truncated command list reads as "the app only has three
+        // commands", which is worse than a scrollbar.
+        setItems(found);
         setHighlight(0);
       }
     };
@@ -234,29 +234,55 @@ export function Composer({
                 animate={{ opacity: 1, y: 0 }}
                 exit={{ opacity: 0, y: 4 }}
                 transition={{ duration: 0.14 }}
-                className="scroll-area absolute bottom-[calc(100%+8px)] left-0 z-20 max-h-64 w-full overflow-auto rounded-[var(--radius-card)] border border-line bg-overlay py-1 shadow-[var(--shadow-panel)]"
+                className="scroll-area absolute bottom-[calc(100%+8px)] left-0 z-20 max-h-[320px] w-full overflow-auto rounded-[var(--radius-card)] border border-line bg-overlay py-1 shadow-[var(--shadow-panel)]"
               >
-                {items.map((item, index) => (
-                  <li key={`${item.kind}-${item.value ?? item.label}`}>
-                    <button
-                      type="button"
-                      onMouseDown={(event) => {
-                        event.preventDefault();
-                        applySuggestion(item);
-                      }}
-                      onMouseEnter={() => setHighlight(index)}
-                      className={cn(
-                        "flex w-full items-baseline gap-2 px-2.5 py-1.5 text-left text-[0.82rem]",
-                        index === highlight ? "bg-accent/12 text-ink" : "text-ink-muted",
+                {items.map((item, index) => {
+                  const previous = items[index - 1];
+                  const showHeading =
+                    item.kind === "command" &&
+                    (!previous || previous.kind !== "command" || previous.source !== item.source);
+
+                  return (
+                    <li key={`${item.kind}-${item.value ?? item.label}`}>
+                      {showHeading && (
+                        <p className="px-2.5 pb-0.5 pt-1.5 text-[0.6rem] font-semibold uppercase tracking-[0.13em] text-ink-ghost">
+                          {item.source === "skill" ? "Skills" : "Commands"}
+                        </p>
                       )}
-                    >
-                      <span className="truncate">{item.label}</span>
-                      {item.hint && item.hint !== item.label && (
-                        <span className="truncate font-mono text-[0.7rem] text-ink-ghost">{item.hint}</span>
-                      )}
-                    </button>
-                  </li>
-                ))}
+                      <button
+                        type="button"
+                        onMouseDown={(event) => {
+                          event.preventDefault();
+                          applySuggestion(item);
+                        }}
+                        onMouseEnter={() => setHighlight(index)}
+                        className={cn(
+                          "flex w-full flex-col gap-0.5 px-2.5 py-1.5 text-left",
+                          index === highlight ? "bg-accent/12" : "hover:bg-raised",
+                        )}
+                      >
+                        <span className="flex items-baseline gap-1.5">
+                          <span
+                            className={cn(
+                              "truncate font-mono text-[0.8rem]",
+                              index === highlight ? "text-accent" : "text-ink",
+                            )}
+                          >
+                            {item.kind === "command" ? `/${item.label}` : item.label}
+                          </span>
+                        </span>
+                        {item.hint && item.hint !== item.label && (
+                          <span
+                            data-selectable
+                            className="line-clamp-2 text-[0.72rem] leading-snug text-ink-ghost"
+                          >
+                            {item.hint}
+                          </span>
+                        )}
+                      </button>
+                    </li>
+                  );
+                })}
               </motion.ul>
             )}
           </AnimatePresence>
@@ -403,11 +429,25 @@ export function Composer({
   );
 }
 
-interface Suggestion {
+export interface Suggestion {
   value: string;
   label: string;
   hint?: string;
   kind: "file" | "command";
+  /** `command` vs `skill`; used to group the list under headings. */
+  source?: string;
+}
+
+/**
+ * Command matching.
+ *
+ * Substring rather than prefix: users type "/ini" expecting /init, and the
+ * command set is small enough that substring never returns noise first.
+ */
+export function matches(suggestion: Suggestion, query: string): boolean {
+  const needle = query.trim().toLowerCase();
+  if (!needle) return true;
+  return `${suggestion.label} ${suggestion.hint ?? ""}`.toLowerCase().includes(needle);
 }
 
 export { toFileParts };

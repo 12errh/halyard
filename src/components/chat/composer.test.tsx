@@ -154,7 +154,8 @@ describe("Composer", () => {
     });
 
     await user.type(box, "/in");
-    await waitFor(() => expect(screen.getByText("init")).toBeInTheDocument());
+    // Rendered with the sigil, as the user typed it.
+    await waitFor(() => expect(screen.getByText("/init")).toBeInTheDocument());
   });
 
   it("closes the suggestion list on Escape", async () => {

@@ -89,3 +89,20 @@ export async function forkSession(sessionId: string): Promise<string | null> {
     return null;
   }
 }
+
+/**
+ * Subagent runs delegated by a session.
+ *
+ * Returned by the server as child sessions; they are rendered nested under
+ * their parent rather than as conversations in their own right.
+ */
+export async function loadChildSessions(parentId: string): Promise<void> {
+  const api = client();
+  if (!api) return;
+  try {
+    const kids = await api.children(parentId);
+    useSessions.getState().loadChildren(parentId, kids);
+  } catch (error) {
+    console.error("children failed", error);
+  }
+}

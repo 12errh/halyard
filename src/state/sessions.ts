@@ -31,6 +31,19 @@ interface SessionStore {
   setQuery(query: string): void;
 
   /**
+   * Child sessions (subagent runs) keyed by parent id.
+   *
+   * Held apart from `sessions` on purpose: a subagent run belongs to the
+   * conversation that spawned it, not to the top-level session list. Left
+   * flat, every delegated task would appear to be a conversation of its own.
+   */
+  children: Record<string, Session[]>;
+  expandedParents: Record<string, boolean>;
+
+  loadChildren(parentId: string, children: Session[]): void;
+  toggleParent(parentId: string): void;
+
+  /**
    * Apply a server event to the list.
    *
    * Without this the title never appears: opencode names a session after the
@@ -45,6 +58,8 @@ export const useSessions = create<SessionStore>((set) => ({
   tabs: [],
   activeId: null,
   query: "",
+  children: {},
+  expandedParents: {},
 
   setSessions: (sessions) =>
     set((state) => {
@@ -106,6 +121,17 @@ export const useSessions = create<SessionStore>((set) => ({
 
   setQuery: (query) => set({ query }),
 
+  loadChildren: (parentId, children) =>
+    set((state) => ({ children: { ...state.children, [parentId]: children } })),
+
+  toggleParent: (parentId) =>
+    set((state) => ({
+      expandedParents: {
+        ...state.expandedParents,
+        [parentId]: !state.expandedParents[parentId],
+      },
+    })),
+
   ingest: (event) =>
     set((state) => {
       if (event.type === "session.updated" || event.type === "session.created") {
@@ -123,11 +149,17 @@ export const useSessions = create<SessionStore>((set) => ({
         if (!id) return state;
         const sessions = state.sessions.filter((s) => s.id !== id);
         const tabs = state.tabs.filter((t) => t !== id);
+        const children = Object.fromEntries(
+          Object.entries(state.children)
+            .map(([parent, kids]) => [parent, kids.filter((k) => k.id !== id)] as const)
+            .filter(([, kids]) => kids.length > 0),
+        );
         if (sessions.length === state.sessions.length) return state;
         return {
           ...state,
           sessions,
           tabs,
+          children,
           activeId: state.activeId === id ? (tabs[tabs.length - 1] ?? null) : state.activeId,
         };
       }
@@ -138,10 +170,21 @@ export const useSessions = create<SessionStore>((set) => ({
 
 // --- Selectors ------------------------------------------------------------
 
+/**
+ * Top-level conversations only.
+ *
+ * Sessions carrying a `parentID` are subagent runs delegated by another
+ * session; they belong nested under their parent, not in the list.
+ */
+export function rootSessions(sessions: Session[]): Session[] {
+  return sessions.filter((session) => !session.parentID);
+}
+
 export function filterSessions(sessions: Session[], query: string): Session[] {
+  const roots = rootSessions(sessions);
   const needle = query.trim().toLowerCase();
-  if (!needle) return sessions;
-  return sessions.filter((s) => s.title.toLowerCase().includes(needle));
+  if (!needle) return roots;
+  return roots.filter((s) => s.title.toLowerCase().includes(needle));
 }
 
 /** Sessions newest first; ties broken by id so ordering is stable. */
@@ -150,6 +193,28 @@ export function sortSessions(sessions: Session[]): Session[] {
     const delta = (b.time?.updated ?? b.time?.created ?? 0) - (a.time?.updated ?? a.time?.created ?? 0);
     return delta !== 0 ? delta : a.id.localeCompare(b.id);
   });
+}
+
+/**
+ * Label a delegated run so it is obvious it is not a conversation.
+ *
+ * opencode titles child sessions with a `(@agent subagent)` suffix, which is
+ * stripped here because the agent is already shown as the leading label —
+ * keeping both just reads as a stutter.
+ */
+export function childLabel(session: Session): string {
+  const agent = session.agent?.trim();
+  const raw = session.title ?? "";
+  const title = raw.replace(/\s*\(@[\w.-]+\s+subagent\)\s*$/i, "").trim();
+
+  const body =
+    title && !/^new session -/i.test(title)
+      ? title
+      : session.summary?.files
+        ? `${session.summary.files} file${session.summary.files === 1 ? "" : "s"} touched`
+        : "Subagent run";
+
+  return agent ? `${agent} · ${body}` : body;
 }
 
 export function tabTitle(sessions: Session[], sessionId: string): string {
