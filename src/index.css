@@ -1,0 +1,345 @@
+@import "tailwindcss";
+
+@import "@fontsource-variable/geist";
+@import "@fontsource-variable/geist-mono";
+@import "@fontsource-variable/inter";
+@import "@fontsource-variable/jetbrains-mono";
+@import "@fontsource/ibm-plex-mono/400.css";
+@import "@fontsource/ibm-plex-mono/500.css";
+@import "@fontsource/ibm-plex-mono/600.css";
+
+/* ------------------------------------------------------------------ *
+ * Halyard design tokens
+ *
+ * Warm-neutral dark is the default. Every accent is deliberately
+ * low-saturation: this is a tool people stare at for hours, so nothing
+ * glows. `data-theme="light"` swaps the neutral ramp only — accents stay
+ * stable so brand recognition survives the switch.
+ * ------------------------------------------------------------------ */
+
+@font-face {
+  font-family: "PixelCode";
+  src: url("./assets/fonts/pixelcode/PixelCode-Regular.woff2") format("woff2");
+  font-weight: 400;
+  font-style: normal;
+  font-display: swap;
+}
+@font-face {
+  font-family: "PixelCode";
+  src: url("./assets/fonts/pixelcode/PixelCode-Light.woff2") format("woff2");
+  font-weight: 300;
+  font-style: normal;
+  font-display: swap;
+}
+@font-face {
+  font-family: "PixelCode";
+  src: url("./assets/fonts/pixelcode/PixelCode-Medium.woff2") format("woff2");
+  font-weight: 500;
+  font-style: normal;
+  font-display: swap;
+}
+@font-face {
+  font-family: "PixelCode";
+  src: url("./assets/fonts/pixelcode/PixelCode-DemiBold.woff2") format("woff2");
+  font-weight: 600;
+  font-style: normal;
+  font-display: swap;
+}
+@font-face {
+  font-family: "PixelCode";
+  src: url("./assets/fonts/pixelcode/PixelCode-Bold.woff2") format("woff2");
+  font-weight: 700;
+  font-style: normal;
+  font-display: swap;
+}
+@font-face {
+  font-family: "PixelCode";
+  src: url("./assets/fonts/pixelcode/PixelCode-Regular-Italic.woff2") format("woff2");
+  font-weight: 400;
+  font-style: italic;
+  font-display: swap;
+}
+
+:root {
+  /* Neutral ramp — warm, not blue-black */
+  --canvas: #141311;
+  --surface: #1a1917;
+  --raised: #211f1c;
+  --overlay: #272420;
+  --line: #2c2926;
+  --line-strong: #3b3733;
+
+  --ink: #edeae4;
+  --ink-muted: #a8a29a;
+  --ink-faint: #77716a;
+  --ink-ghost: #56514b;
+
+  /* Accent — desaturated clay, echoes the warm ramp without neon */
+  --accent: #c87d5f;
+  --accent-hover: #d69076;
+  --accent-quiet: #3a2a23;
+  --accent-ink: #1b1310;
+
+  /* Semantics */
+  --live: #6e8fd8;
+  --good: #7ba05f;
+  --warn: #c2a054;
+  --danger: #c45b52;
+
+  /* Diff */
+  --diff-add: #2f3f2c;
+  --diff-add-line: #3f5a3a;
+  --diff-del: #42292a;
+  --diff-del-line: #6b3a3a;
+
+  --shadow-panel: 0 18px 48px -12px rgb(0 0 0 / 0.6);
+  --ring: color-mix(in oklab, var(--accent) 55%, transparent);
+
+  /* Overridden at runtime by the appearance store */
+  --font-ui: "PixelCode", ui-sans-serif, system-ui, sans-serif;
+  --font-mono: "PixelCode", ui-monospace, monospace;
+  --density: 1;
+  --radius-scale: 1;
+
+  color-scheme: dark;
+}
+
+[data-theme="light"] {
+  --canvas: #faf9f7;
+  --surface: #ffffff;
+  --raised: #f4f2ee;
+  --overlay: #ffffff;
+  --line: #e6e2dc;
+  --line-strong: #d2ccc4;
+
+  --ink: #1c1a17;
+  --ink-muted: #5c564e;
+  --ink-faint: #857e75;
+  --ink-ghost: #a8a099;
+
+  --accent: #b3603f;
+  --accent-hover: #a2543a;
+  --accent-quiet: #f6ebe5;
+  --accent-ink: #fffaf7;
+
+  --live: #4a6bb5;
+  --good: #4f7a3a;
+  --warn: #97741f;
+  --danger: #a83f36;
+
+  --diff-add: #e7f2e3;
+  --diff-add-line: #b8d8b0;
+  --diff-del: #fbe9e7;
+  --diff-del-line: #eeb8b2;
+
+  --shadow-panel: 0 18px 48px -14px rgb(40 33 24 / 0.18);
+  color-scheme: light;
+}
+
+/* Map tokens into Tailwind. `inline` keeps the var() reference live so a
+   theme flip re-resolves without a rebuild. */
+@theme inline {
+  --color-canvas: var(--canvas);
+  --color-surface: var(--surface);
+  --color-raised: var(--raised);
+  --color-overlay: var(--overlay);
+  --color-line: var(--line);
+  --color-line-strong: var(--line-strong);
+
+  --color-ink: var(--ink);
+  --color-ink-muted: var(--ink-muted);
+  --color-ink-faint: var(--ink-faint);
+  --color-ink-ghost: var(--ink-ghost);
+
+  --color-accent: var(--accent);
+  --color-accent-hover: var(--accent-hover);
+  --color-accent-quiet: var(--accent-quiet);
+  --color-accent-ink: var(--accent-ink);
+
+  --color-live: var(--live);
+  --color-good: var(--good);
+  --color-warn: var(--warn);
+  --color-danger: var(--danger);
+
+  --color-diff-add: var(--diff-add);
+  --color-diff-add-line: var(--diff-add-line);
+  --color-diff-del: var(--diff-del);
+  --color-diff-del-line: var(--diff-del-line);
+
+  --font-ui: var(--font-ui);
+  --font-mono: var(--font-mono);
+
+  --radius-card: calc(10px * var(--radius-scale));
+  --radius-panel: calc(14px * var(--radius-scale));
+}
+
+@layer base {
+  * {
+    border-color: var(--line);
+  }
+
+  html,
+  body,
+  #root {
+    height: 100%;
+  }
+
+  body {
+    margin: 0;
+    background: var(--canvas);
+    color: var(--ink);
+    font-family: var(--font-ui);
+    font-size: calc(14px * var(--density));
+    line-height: 1.55;
+    -webkit-font-smoothing: antialiased;
+    text-rendering: optimizeLegibility;
+    overflow: hidden;
+    /* A desktop shell should not feel like a web page. */
+    overscroll-behavior: none;
+    user-select: none;
+    cursor: default;
+  }
+
+  /* Text the user may genuinely need to copy gets selection back. */
+  p,
+  pre,
+  code,
+  input,
+  textarea,
+  [data-selectable] {
+    user-select: text;
+  }
+
+  ::selection {
+    background: color-mix(in oklab, var(--accent) 32%, transparent);
+  }
+
+  :focus-visible {
+    outline: 2px solid var(--ring);
+    outline-offset: 2px;
+    border-radius: 4px;
+  }
+
+  ::-webkit-scrollbar {
+    width: 10px;
+    height: 10px;
+  }
+  ::-webkit-scrollbar-track {
+    background: transparent;
+  }
+  ::-webkit-scrollbar-thumb {
+    background: color-mix(in oklab, var(--ink-ghost) 45%, transparent);
+    border-radius: 999px;
+    border: 3px solid transparent;
+    background-clip: content-box;
+  }
+  ::-webkit-scrollbar-thumb:hover {
+    background: color-mix(in oklab, var(--ink-faint) 70%, transparent);
+    background-clip: content-box;
+  }
+  ::-webkit-scrollbar-corner {
+    background: transparent;
+  }
+}
+
+@layer utilities {
+  .font-mono {
+    font-family: var(--font-mono);
+  }
+
+  /* Thin, warm scroll container used by every scrolling region. */
+  .scroll-area {
+    overflow-y: auto;
+    overscroll-behavior: contain;
+    scrollbar-gutter: stable;
+  }
+
+  .tabular {
+    font-variant-numeric: tabular-nums;
+  }
+}
+
+/* Honour the OS setting. Everything decorative in Halyard is motion, so
+   this collapses to near-static rather than merely slowing things down. */
+@media (prefers-reduced-motion: reduce) {
+  *,
+  *::before,
+  *::after {
+    animation-duration: 0.001ms !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: 0.001ms !important;
+    scroll-behavior: auto !important;
+  }
+}
+
+/* Shiki emits its own background; let the block inherit ours. */
+.shiki,
+.shiki pre {
+  background-color: transparent !important;
+}
+
+/* ------------------------------------------------------------------ *
+ * Prose
+ *
+ * Scoped to `.markdown` so settings copy and chrome never inherit these.
+ * ------------------------------------------------------------------ */
+.markdown {
+  font-size: 0.88rem;
+  line-height: 1.62;
+  color: var(--ink);
+  word-break: break-word;
+}
+
+.markdown > *:first-child {
+  margin-top: 0;
+}
+.markdown > *:last-child {
+  margin-bottom: 0;
+}
+
+.markdown p {
+  margin: 0.55em 0;
+}
+
+.markdown h1,
+.markdown h2,
+.markdown h3,
+.markdown h4 {
+  margin: 1.1em 0 0.4em;
+  font-weight: 600;
+  line-height: 1.3;
+  letter-spacing: -0.011em;
+}
+
+.markdown h1 {
+  font-size: 1.15em;
+}
+.markdown h2 {
+  font-size: 1.05em;
+}
+.markdown h3,
+.markdown h4 {
+  font-size: 0.97em;
+  color: var(--ink-muted);
+}
+
+.markdown strong {
+  font-weight: 600;
+  color: var(--ink);
+}
+
+.markdown .code-surface pre,
+.markdown pre:not(.shiki pre) {
+  font-family: var(--font-mono);
+}
+
+.markdown :not(pre) > code {
+  font-family: var(--font-mono);
+}
+
+.markdown img {
+  max-width: 100%;
+  border-radius: var(--radius-card);
+  border: 1px solid var(--line);
+}
+
