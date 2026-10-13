@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useLayoutEffect, useRef, useState } from "react";
-import { AlertTriangle, ArrowUp, Paperclip, Square, X } from "lucide-react";
+import { AlertTriangle, ArrowUp, Paperclip, Redo2, Shrink, Square, Undo2, X } from "lucide-react";
 import { AnimatePresence, motion } from "motion/react";
 import { Button } from "@/components/ui/button";
 import { Kbd } from "@/components/ui/primitives";
@@ -41,6 +41,12 @@ export function Composer({
   suggestCommands,
   modelPicker,
   plan,
+  canUndo,
+  canRedo,
+  canCompact,
+  onUndo,
+  onRedo,
+  onCompact,
 }: {
   onSubmit(payload: ComposerSubmit): void;
   onAbort(): void;
@@ -53,6 +59,12 @@ export function Composer({
   modelPicker?: React.ReactNode;
   /** Rendered above the input — the agent's live plan. */
   plan?: React.ReactNode;
+  canUndo: boolean;
+  canRedo: boolean;
+  canCompact: boolean;
+  onUndo(): void;
+  onRedo(): void;
+  onCompact(): void;
 }) {
   const [value, setValue] = useState("");
   const [caret, setCaret] = useState(0);
@@ -398,6 +410,42 @@ export function Composer({
               />
 
               {modelPicker}
+
+              {/* Turn-level controls. Disabled rather than hidden while idle so
+                  the toolbar does not reflow every time a turn starts. */}
+              <div className="ml-1 flex items-center gap-0.5">
+                <Button
+                  variant="ghost"
+                  size="icon-sm"
+                  disabled={!canUndo}
+                  onClick={onUndo}
+                  aria-label="Undo the last turn"
+                  title="Undo the last turn"
+                >
+                  <Undo2 size={13} />
+                </Button>
+                <Button
+                  variant="ghost"
+                  size="icon-sm"
+                  disabled={!canRedo}
+                  onClick={onRedo}
+                  aria-label="Redo"
+                  title="Redo"
+                >
+                  <Redo2 size={13} />
+                </Button>
+                <Button
+                  variant="ghost"
+                  size="icon-sm"
+                  disabled={!canCompact || busy}
+                  onClick={onCompact}
+                  aria-label="Compact the conversation"
+                  title="Summarise this conversation to free up context"
+                >
+                  <Shrink size={13} />
+                </Button>
+              </div>
+
               <div className="hidden items-center gap-1.5 text-[0.68rem] text-ink-ghost sm:flex">
                 <Kbd>@</Kbd>
                 <span>files</span>

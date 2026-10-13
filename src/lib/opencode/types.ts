@@ -39,6 +39,11 @@ export interface Session {
   cost?: number;
   tokens?: TokenUsage;
   summary?: { additions: number; deletions: number; files: number };
+  /**
+   * Set while a revert is pending, meaning the session can be rolled forward
+   * again. Absent otherwise.
+   */
+  revertedAt?: number;
   time: TimeParts;
 }
 

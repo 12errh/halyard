@@ -12,6 +12,14 @@ function setup(overrides: Partial<Parameters<typeof Composer>[0]> = {}) {
     busy: false,
     suggestFiles: vi.fn().mockResolvedValue([] as string[]),
     suggestCommands: vi.fn().mockResolvedValue([] as never[]),
+    // Turn controls are opt-in from the caller's point of view; defaulting
+    // them here keeps these tests about composing, not about the toolbar.
+    canUndo: false,
+    canRedo: false,
+    canCompact: false,
+    onUndo: vi.fn(),
+    onRedo: vi.fn(),
+    onCompact: vi.fn(),
     ...overrides,
   };
   render(<Composer {...props} />);

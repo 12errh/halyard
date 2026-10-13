@@ -39,6 +39,9 @@ import {
   renameSession,
 } from "@/actions/sessions";
 import { useServer } from "@/state/server";
+import { useSessionOrg } from "@/state/session-org";
+import { OpencodeClient } from "@/lib/opencode/client";
+import { Archive, Pin, Share2 } from "lucide-react";
 import { useThreads } from "@/state/threads";
 
 export function Sidebar({ onOpenSettings }: { onOpenSettings(): void }) {
@@ -57,6 +60,12 @@ export function Sidebar({ onOpenSettings }: { onOpenSettings(): void }) {
   const busyId = useThreads((s) => s.busySessionId);
   const active = useProjects((s) => s.active);
   const [notice, setNotice] = useState<string | null>(null);
+  const org = useSessionOrg();
+  const pinnedIds = useSessionOrg((s) => (active ? s.pinned[active] ?? [] : []));
+  const archivedIds = useSessionOrg((s) => (active ? s.archived[active] ?? [] : []));
+  const unseenIds = useSessionOrg((s) => (active ? s.unseen[active] ?? [] : []));
+  const isPinned = (id: string) => pinnedIds.includes(id);
+  const isArchived = (id: string) => archivedIds.includes(id);
 
   const handleExport = async (sessionId: string) => {
     const session = useSessions.getState().sessions.find((s) => s.id === sessionId);
@@ -90,7 +99,33 @@ export function Sidebar({ onOpenSettings }: { onOpenSettings(): void }) {
     return () => document.removeEventListener("mousedown", onDown);
   }, [menuOpen]);
 
-  const visible = sortSessions(filterSessions(sessions, query));
+  const searched = sortSessions(filterSessions(sessions, query));
+  // Searching is an explicit request to see everything, archived included —
+  // otherwise a search for a title you archived last month returns nothing and
+  // looks like the session was lost.
+  const arranged = org.arrange(active ?? "", searched);
+  const visible = query
+    ? searched
+    : [...arranged.pinned, ...arranged.recent, ...arranged.archived];
+  const nextRecent = arranged.recent[0]?.id ?? arranged.pinned[0]?.id ?? null;
+  const upsertSession = useSessions((s) => s.upsert);
+
+
+  const handleShare = async (session: Session) => {
+    const phase = useServer.getState().phase;
+    if (phase.kind !== "ready") return;
+    try {
+      const next = session.slug
+        ? session
+        : await new OpencodeClient(phase.info.url).share(session.id);
+      upsertSession(next);
+      const url = `${window.location.origin}/s/${next.slug}`;
+      await navigator.clipboard.writeText(url);
+      setNotice(`Share link copied for "${next.title}"`);
+    } catch {
+      setNotice("Could not share that session");
+    }
+  };
 
   return (
     <aside className="flex w-[248px] shrink-0 flex-col border-r border-line bg-canvas">
@@ -243,7 +278,17 @@ export function Sidebar({ onOpenSettings }: { onOpenSettings(): void }) {
           </p>
         ) : (
           <ul className="flex flex-col gap-px">
-            {visible.map((session) => {
+            {([
+              ...(arranged.pinned.length && !query
+                ? [{ label: "Pinned", items: arranged.pinned }] : []),
+              ...(arranged.recent.length && !query
+                ? [{ label: null, items: arranged.recent }] : []),
+              ...(arranged.archived.length && !query
+                ? [{ label: "Archived", items: arranged.archived }] : []),
+              ...(query ? [{ label: null, items: searched }] : []),
+            ] as Array<{ label: string | null; items: typeof searched }>).map((group) => (
+              <SectionGroup key={group.label ?? "recent"} label={group.label} count={group.items.length}>
+              {group.items.map((session) => {
               const selected = session.id === activeId;
               return (
                 <li key={session.id}>
@@ -284,6 +329,11 @@ export function Sidebar({ onOpenSettings }: { onOpenSettings(): void }) {
 
                     {busyId === session.id ? (
                       <span className="h-1.5 w-1.5 shrink-0 rounded-full bg-live" />
+                    ) : unseenIds.includes(session.id) && session.id !== activeId ? (
+                      <span
+                        title="Unread"
+                        className="h-1.5 w-1.5 shrink-0 rounded-full bg-accent"
+                      />
                     ) : (
                       <span className="h-1.5 w-1.5 shrink-0 rounded-full bg-transparent" />
                     )}
@@ -347,6 +397,34 @@ export function Sidebar({ onOpenSettings }: { onOpenSettings(): void }) {
                         <Download size={11} />
                       </RowAction>
                       <RowAction
+                        label={isPinned(session.id) ? "Unpin" : "Pin to top"}
+                        onClick={(event) => {
+                          event.stopPropagation();
+                          if (active) org.togglePin(active, session.id);
+                        }}
+                      >
+                        <Pin size={11} className={isPinned(session.id) ? "fill-current text-accent" : ""} />
+                      </RowAction>
+                      <RowAction
+                        label={isArchived(session.id) ? "Unarchive" : "Archive"}
+                        onClick={(event) => {
+                          event.stopPropagation();
+                          if (active) org.toggleArchive(active, session.id);
+                          if (isArchived(session.id) && activeId === session.id && nextRecent) openTab(nextRecent);
+                        }}
+                      >
+                        <Archive size={11} />
+                      </RowAction>
+                      <RowAction
+                        label={session.slug ? "Copy share link" : "Share"}
+                        onClick={(event) => {
+                          event.stopPropagation();
+                          void handleShare(session);
+                        }}
+                      >
+                        <Share2 size={11} className={session.slug ? "text-accent" : ""} />
+                      </RowAction>
+                      <RowAction
                         label="Delete session"
                         danger
                         onClick={(event) => {
@@ -407,10 +485,36 @@ export function Sidebar({ onOpenSettings }: { onOpenSettings(): void }) {
                 </li>
               );
             })}
+              </SectionGroup>
+            ))}
           </ul>
         )}
       </div>
     </aside>
+  );
+}
+
+/** A titled run of session rows: pinned, recent, archived. */
+function SectionGroup({
+  label,
+  count,
+  children,
+}: {
+  label: string | null;
+  count: number;
+  children: React.ReactNode;
+}) {
+  if (!label) return <>{children}</>;
+  return (
+    <>
+      <li className="flex items-center gap-2 px-2 pb-1 pt-3" role="presentation">
+        <span className="text-[0.62rem] font-semibold uppercase tracking-[0.12em] text-ink-ghost">
+          {label}
+        </span>
+        <span className="text-[0.62rem] text-ink-ghost/70">{count}</span>
+      </li>
+      {children}
+    </>
   );
 }
 

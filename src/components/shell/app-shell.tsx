@@ -27,6 +27,7 @@ import { useProjects } from "@/state/projects";
 import { useDesktop } from "@/state/desktop";
 import { useTodos, todosFor } from "@/state/todos";
 import { useTranscript } from "@/state/transcript";
+import { useSessionOrg } from "@/state/session-org";
 import { announceFinish, useNativeShellActions, useSessionActivity } from "./desktop-bridge";
 import { setAttention } from "@/lib/desktop";
 import { useServer } from "@/state/server";
@@ -325,6 +326,52 @@ export function AppShell() {
     await switchProject(selected);
   }, [activeProject]);
 
+  // --- Turn controls -------------------------------------------------------
+
+  // Undo rewinds to the message before the last user turn, which is what
+  // "undo that prompt" means to someone looking at the transcript.
+  const canUndo = useMemo(() => {
+    if (!activeId || !thread) return false;
+    const users = (thread.order ?? []).filter((id) => thread.messages[id]?.info?.role === "user");
+    return users.length > 0;
+  }, [activeId, thread]);
+
+  const activeSessionInfo = sessions.find((s) => s.id === activeId);
+  const canRedo = Boolean(activeSessionInfo?.revertedAt);
+
+  const undo = useCallback(async () => {
+    if (!client || !activeId || !thread) return;
+    const users = (thread.order ?? []).filter((id) => thread.messages[id]?.info?.role === "user");
+    const last = users[users.length - 1];
+    if (!last) return;
+    await client.revert(activeId, last).catch(() => undefined);
+  }, [client, activeId, thread]);
+
+  const redo = useCallback(async () => {
+    if (!client || !activeId) return;
+    await client.unrevert(activeId).catch(() => undefined);
+  }, [client, activeId]);
+
+  const compact = useCallback(async () => {
+    // The picker holds the live choice; the session carries whatever it last
+    // used, which is the fallback when no model has been picked yet.
+    const picked = useModels.getState().selection;
+    const fallback = activeSessionInfo?.model;
+    const model = picked
+      ? { providerID: picked.providerID, modelID: picked.modelID }
+      : fallback
+        ? { providerID: fallback.providerID, modelID: fallback.id }
+        : null;
+    if (!client || !activeId || !model) return;
+    // The summary is generated, so it needs a model — opencode rejects the
+    // request outright without one.
+    try {
+      await client.summarize(activeId, model);
+    } catch {
+      /* surfaced by the busy indicator going away */
+    }
+  }, [client, activeId, activeSessionInfo]);
+
   const newSession = useCallback(async () => {
     if (!client) return;
     const session = await client.createSession();
@@ -415,6 +462,8 @@ export function AppShell() {
   // only drives an imperative call and a badge, and re-rendering the whole
   // shell every time a background agent finishes would be wasteful.
   const unread = useRef(new Set<string>());
+  const markUnseen = useSessionOrg((s) => s.markUnseen);
+  const markSeen = useSessionOrg((s) => s.markSeen);
 
   useEffect(() => {
     void hydrateDesktop();
@@ -424,15 +473,18 @@ export function AppShell() {
     async (sessionID: string) => {
       const info = sessions.find((s) => s.id === sessionID);
       unread.current.add(sessionID);
+      if (activeProject) markUnseen(activeProject, sessionID);
 
+      // Only interrupt for a session the user is not already watching.
+      const watching = sessionID === activeId;
       await announceFinish({
-        enabled: notifyOnFinish,
+        enabled: notifyOnFinish && !watching,
         title: info?.title ?? "Agent finished",
         body: info?.title ?? "The agent finished a turn.",
         unread: unread.current.size,
       });
     },
-    [sessions, notifyOnFinish],
+    [sessions, notifyOnFinish, activeId, activeProject, markUnseen],
   );
 
   useSessionActivity(allStatus, onFinished);
@@ -441,6 +493,7 @@ export function AppShell() {
   // already reading is a lie.
   useEffect(() => {
     if (!activeId) return;
+    markSeen(activeProject ?? "", activeId);
     if (!unread.current.delete(activeId)) return;
     void setAttention(unread.current.size);
   }, [activeId]);
@@ -544,6 +597,12 @@ export function AppShell() {
                 placeholder="Ask opencode to do something…"
                 suggestFiles={(query) => client?.files(query, 12) ?? Promise.resolve([])}
                 plan={plan.length && pinPlan ? <TodoPanel todos={plan} /> : undefined}
+                canUndo={canUndo && !busy}
+                canRedo={canRedo && !busy}
+                canCompact={Boolean(activeId) && canUndo}
+                onUndo={() => void undo()}
+                onRedo={() => void redo()}
+                onCompact={() => void compact()}
                 modelPicker={
                   <>
                     <ModePicker modes={modes} value={modeValue} onChange={setModeValue} />

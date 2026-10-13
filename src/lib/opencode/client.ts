@@ -422,6 +422,37 @@ export class OpencodeClient {
     return this.request<Session>(`/session/${sessionID}/unrevert`, { method: "POST" });
   }
 
+  /**
+   * Summarise the conversation so far into a single turn.
+   *
+   * This is what the compact command is. A model is required because the
+   * summary is generated rather than extracted, and it is the only request on
+   * this client that fails with a bare "Missing key providerID" — worth
+   * saying out loud in the error rather than letting it surface raw.
+   */
+  summarize(sessionID: string, model: { providerID: string; modelID: string }) {
+    return this.request<Session>(`/session/${sessionID}/summarize`, {
+      method: "POST",
+      body: JSON.stringify(model),
+    });
+  }
+
+  /** Publish the session and return it carrying the share slug. */
+  share(sessionID: string) {
+    return this.request<Session>(`/session/${sessionID}/share`, { method: "POST" });
+  }
+
+  unshare(sessionID: string) {
+    return this.request<Session>(`/session/${sessionID}/share`, { method: "DELETE" });
+  }
+
+  rename(sessionID: string, title: string) {
+    return this.request<Session>(`/session/${sessionID}`, {
+      method: "PATCH",
+      body: JSON.stringify({ title }),
+    });
+  }
+
   files(query: string, limit = 20) {
     return this.request<string[]>(
       `/find/file?query=${encodeURIComponent(query)}&limit=${limit}&type=file`,
