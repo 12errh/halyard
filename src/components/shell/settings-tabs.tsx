@@ -28,6 +28,7 @@ import { useModels } from "@/state/models";
 import { useServer } from "@/state/server";
 import { useUi } from "@/state/ui";
 import { useDesktop } from "@/state/desktop";
+import { useTranscript } from "@/state/transcript";
 import { FONT_OPTIONS } from "@/lib/fonts";
 import { cn } from "@/lib/utils";
 
@@ -130,6 +131,7 @@ export function AppearanceTab() {
   const ui = useUi();
   const appearance = ui.appearance;
   const desktop = useDesktop();
+  const transcript = useTranscript();
 
   return (
     <div>
@@ -220,6 +222,29 @@ export function AppearanceTab() {
             hint="Starts Halyard when you sign in."
             checked={desktop.launchAtLogin}
             onChange={(next) => desktop.update({ launchAtLogin: next })}
+          />
+        </div>
+      </Group>
+
+      <Group label="Transcript" hint="How much of each turn to show.">
+        <div className="divide-y divide-line/60">
+          <Switch
+            label="Show reasoning"
+            hint="The agent's thinking between steps. Useful when debugging; noise when you just want the answer."
+            checked={transcript.showThinking}
+            onChange={() => transcript.toggle("showThinking")}
+          />
+          <Switch
+            label="Show timestamps"
+            hint="A time beside every turn. Off by default — hover a turn to see it without cluttering the column."
+            checked={transcript.showTimestamps}
+            onChange={() => transcript.toggle("showTimestamps")}
+          />
+          <Switch
+            label="Pin the plan"
+            hint="Keep the agent's todo list above the composer instead of only in the transcript."
+            checked={transcript.pinPlan}
+            onChange={() => transcript.toggle("pinPlan")}
           />
         </div>
       </Group>

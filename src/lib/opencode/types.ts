@@ -106,10 +106,121 @@ export interface ReasoningPart extends BasePart {
 
 export type ToolStatus = "pending" | "running" | "completed" | "error";
 
+/**
+ * Structured extras the server attaches to a tool call.
+ *
+ * These are not decoration. The tool's *input* says what was asked for; the
+ * metadata says what came back in a form worth showing. An `edit` carries its
+ * unified diff here, `glob`/`grep` carry match counts, `question` carries the
+ * answers. Without them a completed tool call is just a name and a blob of
+ * text.
+ *
+ * Declared as a loose record because the set differs per tool and grows with
+ * opencode's versions; the readers below narrow it and tolerate absence.
+ */
+export interface ToolMetadata {
+  /** `edit` — unified diff for the change. */
+  diff?: string;
+  /** `glob` — how many paths matched. */
+  count?: number;
+  /** `grep` — how many matches. */
+  matches?: number;
+  /** `websearch` — which search backend answered. */
+  provider?: string;
+  /** `question` — the answers, parallel to the questions that were asked. */
+  answers?: string[][];
+  /** `patch` — per-file patches applied together. */
+  files?: Array<{
+    filePath?: string;
+    relativePath?: string;
+    movePath?: string;
+    patch?: string;
+    additions?: number;
+    deletions?: number;
+    type?: string;
+  }>;
+  /** `todowrite` — the list, mirrored from the input for convenience. */
+  todos?: Todo[];
+  /** Set when a long list was cut short for display. */
+  truncated?: boolean;
+  [key: string]: unknown;
+}
+
 export type ToolState =
-  | { status: "pending" | "running"; input?: Record<string, unknown>; title?: string; time?: TimeParts }
-  | { status: "completed"; input: Record<string, unknown>; output: string; title: string; time: TimeParts }
-  | { status: "error"; input?: Record<string, unknown>; title?: string; error: string; time?: TimeParts };
+  | {
+      status: "pending" | "running";
+      input?: Record<string, unknown>;
+      title?: string;
+      time?: TimeParts;
+      metadata?: ToolMetadata;
+    }
+  | {
+      status: "completed";
+      input: Record<string, unknown>;
+      output: string;
+      title: string;
+      time: TimeParts;
+      metadata?: ToolMetadata;
+    }
+  | {
+      status: "error";
+      input?: Record<string, unknown>;
+      title?: string;
+      error: string;
+      time?: TimeParts;
+      metadata?: ToolMetadata;
+    };
+
+/**
+ * A single entry in an agent's plan.
+ *
+ * `status` and `priority` are read from the server and can both be absent or
+ * carry a value this build does not know about, so the narrowers below are
+ * deliberately forgiving rather than a hard union.
+ */
+export interface Todo {
+  content?: string;
+  status?: string;
+  priority?: string;
+  id?: string;
+}
+
+export const TODO_STATUSES = ["pending", "in_progress", "completed", "cancelled"] as const;
+export type TodoStatus = (typeof TODO_STATUSES)[number];
+
+export const TODO_PRIORITIES = ["high", "medium", "low"] as const;
+export type TodoPriority = (typeof TODO_PRIORITIES)[number];
+
+/** Coerce a server todo into one we can render, or `null` if unusable. */
+export function normaliseTodo(raw: unknown): Todo | null {
+  if (!raw || typeof raw !== "object") return null;
+  const record = raw as Record<string, unknown>;
+  const content = typeof record.content === "string" ? record.content.trim() : "";
+  if (!content) return null;
+  return {
+    content,
+    status: typeof record.status === "string" ? record.status : "pending",
+    priority: typeof record.priority === "string" ? record.priority : "medium",
+    id: typeof record.id === "string" ? record.id : undefined,
+  };
+}
+
+/** Normalise a whole list, dropping entries that carry no text. */
+export function normaliseTodos(raw: unknown): Todo[] {
+  if (!Array.isArray(raw)) return [];
+  return raw.map(normaliseTodo).filter((t): t is Todo => t !== null);
+}
+
+/** How much of a todo list is done, for the progress bar. */
+export function todoProgress(todos: Todo[]): { done: number; total: number; active: number } {
+  let done = 0;
+  let active = 0;
+  for (const todo of todos) {
+    if (todo.status === "completed" || todo.status === "cancelled") done += 1;
+    else if (todo.status === "in_progress") active += 1;
+  }
+  return { done, total: todos.length, active };
+}
 
 /** Human-readable label for a tool call, falling back to its arguments. */
 export function toolTitle(tool: string, state: ToolState): string {
@@ -291,6 +402,10 @@ export interface Events {
   "session.idle": { sessionID: string };
   "session.error": { sessionID: string; error: MessageError };
   "session.diff": { sessionID: string; diff: FileDiff[] };
+  /** The agent's plan changed. Carries the whole list, not a delta. */
+  "todo.updated": { sessionID: string; todos: unknown[] };
+  /** A part was retracted by the server rather than edited. */
+  "message.part.removed": { sessionID: string; messageID: string; partID: string };
   "permission.replied": { sessionID: string; requestID: string; reply: string };
   [key: string]: { sessionID?: string } & Record<string, unknown>;
 

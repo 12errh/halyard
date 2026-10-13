@@ -165,3 +165,38 @@ export function DiffSummary({ diffs }: { diffs: NormalisedDiff[] }) {
 }
 
 export { formatCounts };
+
+/**
+ * A diff that arrived as a raw patch string, with no file wrapper.
+ *
+ * `edit` and `patch` tools carry their changes as a bare unified diff in the
+ * tool metadata rather than through the session diff feed, so it has to be
+ * shaped here. The counts come from parsing the patch because there is no
+ * envelope carrying them.
+ */
+export function RawDiff({ patch, path = "" }: { patch: string; path?: string }) {
+  const parsed = parsePatch(patch);
+
+  // A patch with no hunk header is not a unified diff; showing it verbatim
+  // beats showing an empty file header.
+  if (!parsed.hunks.length) {
+    return (
+      <pre className="scroll-area max-h-64 overflow-auto whitespace-pre-wrap rounded-[5px] bg-raised px-2 py-1.5 font-mono text-[0.71rem] leading-[1.55] text-ink-faint">
+        {patch}
+      </pre>
+    );
+  }
+
+  return (
+    <DiffView
+      defaultOpen
+      diff={{
+        path,
+        status: parsed.additions > 0 && parsed.deletions === 0 ? "added" : "modified",
+        additions: parsed.additions,
+        deletions: parsed.deletions,
+        patch,
+      }}
+    />
+  );
+}

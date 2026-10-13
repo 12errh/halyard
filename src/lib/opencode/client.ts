@@ -161,6 +161,18 @@ export class OpencodeClient {
     return this.request<Record<string, SessionStatus>>("/session/status");
   }
 
+  /**
+   * The agent's current plan for a session.
+   *
+   * Served separately from the messages: the transcript only contains a
+   * `todowrite` tool call at the moment the list last changed, whereas this
+   * always reflects the live state, so it is what the panel should read on
+   * open rather than trying to replay the history.
+   */
+  todos(sessionID: string) {
+    return this.request<unknown[]>(`/session/${sessionID}/todo`);
+  }
+
   agents() {
     return this.request<Array<{ name: string; description?: string; mode?: string }>>("/agent");
   }

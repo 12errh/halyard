@@ -17,6 +17,7 @@ import { TitleBar } from "@/components/shell/title-bar";
 import { FileTree } from "@/components/shell/file-tree";
 import { EmptyState } from "./empty-state";
 import { Companion } from "@/components/chat/companion";
+import { TodoPanel } from "@/components/chat/todo-panel";
 import { SettingsDialog } from "./settings-dialog";
 import { OpencodeClient } from "@/lib/opencode/client";
 import { toFileParts } from "@/lib/attachments";
@@ -24,6 +25,8 @@ import { normaliseDiff } from "@/lib/diff";
 import type { MessageEntry } from "@/lib/opencode/thread";
 import { useProjects } from "@/state/projects";
 import { useDesktop } from "@/state/desktop";
+import { useTodos, todosFor } from "@/state/todos";
+import { useTranscript } from "@/state/transcript";
 import { announceFinish, useNativeShellActions, useSessionActivity } from "./desktop-bridge";
 import { setAttention } from "@/lib/desktop";
 import { useServer } from "@/state/server";
@@ -72,6 +75,10 @@ export function AppShell() {
   const closeTab = useSessions((s) => s.closeTab);
   const stepTab = useSessions((s) => s.stepTab);
   const allStatus = useSessions((s) => s.status);
+  const todosBySession = useTodos((s) => s.bySession);
+  const hydrateTodos = useTodos((s) => s.hydrate);
+  const plan = todosFor(todosBySession, activeId);
+  const pinPlan = useTranscript((s) => s.pinPlan);
   const hydrateDesktop = useDesktop((s) => s.hydrate);
 
   const thread = useThreads((s) => (activeId ? s.threads[activeId] : undefined));
@@ -82,6 +89,7 @@ export function AppShell() {
   const ingestSessionEvent = useSessions((s) => s.ingest);
   const ingestSystemEvent = useSystem((s) => s.ingest);
   const ingestQuestionEvent = useQuestions((s) => s.ingest);
+  const ingestTodoEvent = useTodos((s) => s.ingest);
   const syncQuestions = useQuestions((s) => s.sync);
   const resolveQuestion = useQuestions((s) => s.resolve);
   const questionsState = useQuestions((s) => s.bySession);
@@ -99,6 +107,23 @@ export function AppShell() {
     void attach();
     preloadHighlighter();
   }, [hydrate, attach]);
+
+  // The plan lives on the server, not only in the transcript: a list written
+  // before this session was opened would otherwise look empty until the agent
+  // happened to write it again.
+  useEffect(() => {
+    if (!client || !activeId) return;
+    let cancelled = false;
+    void client
+      .todos(activeId)
+      .then((raw) => {
+        if (!cancelled) hydrateTodos(activeId, raw);
+      })
+      .catch(() => undefined);
+    return () => {
+      cancelled = true;
+    };
+  }, [client, activeId, hydrateTodos]);
 
   // The default model is scoped per project, so switching repos must reload it.
   useEffect(() => {
@@ -136,6 +161,7 @@ export function AppShell() {
       // provider or adding a server updates the settings tabs with no reload.
       ingestSystemEvent(event);
       ingestQuestionEvent(event);
+      ingestTodoEvent(event);
     });
 
     // The per-session hydration cache is scoped to a project; a new server means
@@ -517,6 +543,7 @@ export function AppShell() {
                 disabled={false}
                 placeholder="Ask opencode to do something…"
                 suggestFiles={(query) => client?.files(query, 12) ?? Promise.resolve([])}
+                plan={plan.length && pinPlan ? <TodoPanel todos={plan} /> : undefined}
                 modelPicker={
                   <>
                     <ModePicker modes={modes} value={modeValue} onChange={setModeValue} />

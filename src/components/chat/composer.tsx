@@ -40,6 +40,7 @@ export function Composer({
   suggestFiles,
   suggestCommands,
   modelPicker,
+  plan,
 }: {
   onSubmit(payload: ComposerSubmit): void;
   onAbort(): void;
@@ -50,6 +51,8 @@ export function Composer({
   suggestCommands(): Promise<Suggestion[]>;
   /** Rendered in the composer's toolbar, left of the send affordance. */
   modelPicker?: React.ReactNode;
+  /** Rendered above the input — the agent's live plan. */
+  plan?: React.ReactNode;
 }) {
   const [value, setValue] = useState("");
   const [caret, setCaret] = useState(0);
@@ -197,6 +200,10 @@ export function Composer({
   return (
     <div className="px-5 pb-4">
       <div className="mx-auto w-full max-w-[760px]">
+        {/* The plan sits above the box rather than inside it: it is context,
+            not input, and the composer should not look crowded when it
+            appears. */}
+        {plan && <div className="mb-2">{plan}</div>}
         <div
           onDragOver={(event) => {
             event.preventDefault();

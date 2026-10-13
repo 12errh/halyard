@@ -11,6 +11,7 @@ import { isStreaming, orderedParts, type MessageEntry } from "@/lib/opencode/thr
 import { normaliseDiff, type NormalisedDiff } from "@/lib/diff";
 import type { Part, PermissionReply, PendingPermission, UserMessage } from "@/lib/opencode/types";
 import type { PendingQuestion } from "@/state/questions";
+import { useTranscript } from "@/state/transcript";
 import { cn } from "@/lib/utils";
 
 export function MessageThread({
@@ -168,6 +169,7 @@ function Turn({
   if (!info) return null;
 
   const assistant = info.role === "assistant";
+  const showTimestamps = useTranscript((s) => s.showTimestamps);
   const createdAt = info.time?.created;
   const text = userText(parts);
   const canEdit = !assistant && text.length > 0 && onEditAndResend !== undefined;
@@ -199,7 +201,12 @@ function Turn({
         // glance rather than distinguished only by a label.
         <div className="max-w-[85%] min-w-0">
           <div className="mb-1 flex items-baseline justify-end gap-2 pr-0.5">
-            <time className="text-[0.66rem] text-ink-ghost opacity-0 transition-opacity group-hover:opacity-100">
+            <time
+              className={cn(
+                "text-[0.66rem] text-ink-ghost",
+                !showTimestamps && "opacity-0 transition-opacity group-hover:opacity-100",
+              )}
+            >
               {formatTime(createdAt)}
             </time>
             {canEdit && !editing && (

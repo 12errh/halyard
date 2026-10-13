@@ -1,34 +1,62 @@
 import {
   AlertTriangle,
+  Braces,
   Brain,
   ChevronRight,
   CircleCheck,
   CircleX,
   Clock,
   FileCode2,
+  FilePlus2,
   GitBranch,
+  Globe,
+  Grid3x3,
+  Layers,
+  List,
+  ListChecks,
   Loader2,
+  MessageCircleQuestion,
+  PencilLine,
+  Search,
   Sparkles,
   Terminal,
+  TextSearch,
   Wrench,
+  Zap,
 } from "lucide-react";
 import { AnimatePresence, motion } from "motion/react";
-import { useState, type ReactNode } from "react";
+import { useMemo, useState, type ReactNode } from "react";
 import { Markdown } from "./markdown";
+import { RawDiff } from "./diff-view";
+import { TodoBlock } from "./todo-panel";
+import { describeTool, type ToolView } from "./tool-view";
+import { useTranscript } from "@/state/transcript";
 import { cn } from "@/lib/utils";
-import { toolTitle, type Part, type ToolPart, type ToolState } from "@/lib/opencode/types";
+import type { Part, ToolPart, ToolState } from "@/lib/opencode/types";
 
-/** Map a tool name onto a recognisable glyph. */
-function toolIcon(tool: string): ReactNode {
-  const name = tool.toLowerCase();
-  if (name.includes("bash") || name.includes("shell") || name.includes("exec") || name.includes("run"))
-    return <Terminal size={12} />;
-  if (name.includes("task") || name.includes("agent")) return <Sparkles size={12} />;
-  if (name.includes("read") || name.includes("write") || name.includes("edit") || name.includes("file"))
-    return <FileCode2 size={12} />;
-  if (name.includes("grep") || name.includes("glob") || name.includes("find") || name.includes("search"))
-    return <GitBranch size={12} />;
-  return <Wrench size={12} />;
+/** Map a tool's presentation icon onto a recognisable glyph. */
+function toolIcon(icon: ToolView["icon"]): ReactNode {
+  switch (icon) {
+    case "bash": return <Terminal size={12} />;
+    case "read": return <FileCode2 size={12} />;
+    case "write": return <FilePlus2 size={12} />;
+    case "edit": return <PencilLine size={12} />;
+    case "search": return <Search size={12} />;
+    case "glob": return <Grid3x3 size={12} />;
+    case "grep": return <TextSearch size={12} />;
+    case "list": return <List size={12} />;
+    case "web": return <Globe size={12} />;
+    case "task": return <Sparkles size={12} />;
+    case "todo": return <ListChecks size={12} />;
+    case "skill": return <Zap size={12} />;
+    case "patch": return <GitBranch size={12} />;
+    case "question": return <MessageCircleQuestion size={12} />;
+    case "lsp": return <Braces size={12} />;
+    case "batch": return <Layers size={12} />;
+    case "agent": return <Sparkles size={12} />;
+    case "invalid": return <AlertTriangle size={12} />;
+    default: return <Wrench size={12} />;
+  }
 }
 
 function duration(state: ToolState): string {
@@ -42,18 +70,38 @@ function duration(state: ToolState): string {
 }
 
 /**
- * One tool call, collapsed.
+ * One tool call.
  *
  * Reads as a single quiet line rather than a log entry: status is carried by a
- * leading rule and a colour, not by a wall of text. Everything else is one
- * click away.
+ * leading rule and a colour, not by a wall of text.
+ *
+ * The title and the secondary line come from `describeTool`, which is where
+ * each tool's own vocabulary lives. That is what makes a glob report its match
+ * count and an edit report its diff — both of which live in the tool metadata
+ * and were previously dropped on the floor.
  */
 export function ToolRow({ part }: { part: ToolPart }) {
-  const [open, setOpen] = useState(false);
   const { state } = part;
+  const view = useMemo(() => describeTool(part.tool, state), [part.tool, state]);
+
+  const [open, setOpen] = useState(false);
   const failed = state.status === "error";
   const active = state.status === "pending" || state.status === "running";
   const elapsed = duration(state);
+
+  // A todo list is its own presentation, not something to expand.
+  if (view.todos?.length) {
+    return (
+      <div className="my-1.5">
+        <TodoBlock todos={view.todos} truncated={state.metadata?.truncated} />
+      </div>
+    );
+  }
+
+  const errorText = state.status === "error" ? state.error : undefined;
+  const output = state.status === "completed" ? state.output : "";
+  const hasBody = Boolean(view.body?.text.trim());
+  const expandable = hasBody || Boolean(output) || Boolean(errorText);
 
   return (
     <div
@@ -64,9 +112,12 @@ export function ToolRow({ part }: { part: ToolPart }) {
     >
       <button
         type="button"
-        onClick={() => setOpen((v) => !v)}
-        aria-expanded={open}
-        className="flex w-full items-center gap-2 py-1.5 pl-2 pr-2 text-left"
+        onClick={expandable ? () => setOpen((v) => !v) : undefined}
+        aria-expanded={expandable ? open : undefined}
+        className={cn(
+          "flex w-full items-center gap-2 py-1.5 pl-2 pr-2 text-left",
+          expandable && "cursor-pointer",
+        )}
       >
         <span
           className={cn(
@@ -76,14 +127,18 @@ export function ToolRow({ part }: { part: ToolPart }) {
         />
 
         <span className={cn("shrink-0", active ? "text-live" : failed ? "text-danger" : "text-ink-faint")}>
-          {toolIcon(part.tool)}
+          {toolIcon(view.icon)}
         </span>
 
-        <span className="shrink-0 text-[0.78rem] font-medium text-ink-muted">{part.tool}</span>
-
-        <span data-selectable className="min-w-0 flex-1 truncate font-mono text-[0.73rem] text-ink-faint">
-          {toolTitle(part.tool, state)}
+        <span data-selectable className="min-w-0 flex-1 truncate text-[0.76rem] text-ink-muted">
+          {view.title}
         </span>
+
+        {view.description && (
+          <span data-selectable className="hidden shrink-0 truncate text-[0.68rem] text-ink-ghost sm:block">
+            {view.description}
+          </span>
+        )}
 
         {elapsed && (
           <span className="tabular hidden shrink-0 items-center gap-1 font-mono text-[0.68rem] text-ink-ghost sm:flex">
@@ -96,13 +151,15 @@ export function ToolRow({ part }: { part: ToolPart }) {
         {state.status === "completed" && !active && <CircleCheck size={12} className="shrink-0 text-good/80" />}
         {failed && <CircleX size={12} className="shrink-0 text-danger" />}
 
-        <ChevronRight
-          size={12}
-          className={cn(
-            "shrink-0 text-ink-ghost transition-transform duration-150",
-            open && "rotate-90",
-          )}
-        />
+        {expandable && (
+          <ChevronRight
+            size={12}
+            className={cn(
+              "shrink-0 text-ink-ghost transition-transform duration-150",
+              open && "rotate-90",
+            )}
+          />
+        )}
       </button>
 
       <AnimatePresence initial={false}>
@@ -115,27 +172,43 @@ export function ToolRow({ part }: { part: ToolPart }) {
             className="overflow-hidden"
           >
             <div className="space-y-2 border-t border-line/70 px-2.5 py-2">
+              {/* The point of the change, when there is one, before the raw
+                  output it was derived from. */}
+              {view.body?.kind === "diff" && (
+                <Block label="Diff">
+                  <RawDiff patch={view.body.text} path={typeof state.input?.filePath === "string" ? state.input.filePath : ""} />
+                </Block>
+              )}
+
+              {view.body?.kind === "code" && (
+                <Block label={view.title.replace(/^Wrote\s*/, "")}>
+                  <pre className="scroll-area max-h-72 overflow-auto rounded-[5px] bg-raised px-2 py-1.5 font-mono text-[0.71rem] leading-[1.55] text-ink-muted">
+                    {view.body.text}
+                  </pre>
+                </Block>
+              )}
+
+              {errorText && (
+                <Block label="Error" tone="danger">
+                  <pre className="scroll-area max-h-48 overflow-auto whitespace-pre-wrap rounded-[5px] bg-danger/[0.08] px-2 py-1.5 font-mono text-[0.71rem] leading-[1.55] text-danger">
+                    {errorText}
+                  </pre>
+                </Block>
+              )}
+
+              {output && !hasBody && (
+                <Block label="Output">
+                  <pre className="scroll-area max-h-72 overflow-auto whitespace-pre-wrap rounded-[5px] bg-raised px-2 py-1.5 font-mono text-[0.71rem] leading-[1.55] text-ink-muted">
+                    {output}
+                  </pre>
+                </Block>
+              )}
+
               <Block label="Input">
                 <pre className="scroll-area max-h-48 overflow-auto rounded-[5px] bg-raised px-2 py-1.5 font-mono text-[0.71rem] leading-[1.55] text-ink-faint">
                   {JSON.stringify(state.input ?? {}, null, 2)}
                 </pre>
               </Block>
-
-              {state.status === "error" && (
-                <Block label="Error" tone="danger">
-                  <pre className="scroll-area max-h-48 overflow-auto whitespace-pre-wrap rounded-[5px] bg-danger/[0.08] px-2 py-1.5 font-mono text-[0.71rem] leading-[1.55] text-danger">
-                    {state.error}
-                  </pre>
-                </Block>
-              )}
-
-              {state.status === "completed" && state.output && (
-                <Block label="Output">
-                  <pre className="scroll-area max-h-72 overflow-auto whitespace-pre-wrap rounded-[5px] bg-raised px-2 py-1.5 font-mono text-[0.71rem] leading-[1.55] text-ink-muted">
-                    {state.output}
-                  </pre>
-                </Block>
-              )}
             </div>
           </motion.div>
         )}
@@ -311,6 +384,10 @@ function StepMarker({ label, cost }: { label: string; cost?: number }) {
 }
 
 export function PartView({ part, streaming }: { part: Part; streaming: boolean }) {
+  // Read once per render rather than per part: the store is cheap to read but
+  // a turn can hold hundreds of parts.
+  const showThinking = useTranscript((s) => s.showThinking);
+
   switch (part.type) {
     case "text":
       return part.text.trim() ? (
@@ -320,6 +397,9 @@ export function PartView({ part, streaming }: { part: Part; streaming: boolean }
       ) : null;
 
     case "reasoning":
+      // Hidden rather than removed: the part stays in the transcript so
+      // re-enabling the toggle restores it without a reload.
+      if (!showThinking) return null;
       return <ReasoningBlock text={part.text} streaming={streaming} />;
 
     case "tool":
