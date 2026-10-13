@@ -32,7 +32,7 @@ export function TitleBar({
       <Button
         variant="ghost"
         size="icon-sm"
-        onClick={onToggleSidebar}
+        onClick={() => onToggleSidebar()}
         aria-label="Toggle sidebar"
       >
         <PanelLeft size={14} />
@@ -59,7 +59,7 @@ export function TitleBar({
       <Button
         variant="ghost"
         size="icon-sm"
-        onClick={onToggleFileTree}
+        onClick={() => onToggleFileTree()}
         aria-label="Toggle file explorer"
         aria-pressed={fileTreeOpen}
         className={fileTreeOpen ? "bg-raised text-ink" : undefined}

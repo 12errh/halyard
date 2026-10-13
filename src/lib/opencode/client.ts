@@ -6,6 +6,7 @@
  * failure modes) visible in one file.
  */
 
+import { httpFetch } from "@/lib/http";
 import type {
   AssistantMessage,
   MessageInfo,
@@ -55,7 +56,7 @@ export interface PromptOptions {
 export class OpencodeClient {
   constructor(
     readonly baseUrl: string,
-    private readonly fetchImpl: typeof fetch = fetch,
+    private readonly fetchImpl: typeof fetch = httpFetch,
   ) {}
 
   private async request<T>(path: string, init?: RequestInit): Promise<T> {

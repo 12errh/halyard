@@ -24,13 +24,13 @@ import { useSessions } from "@/state/sessions";
 import { useThreads } from "@/state/threads";
 import { useUi } from "@/state/ui";
 import { pendingFor, usePermissions } from "@/state/permissions";
+import { switchProject } from "@/actions/project";
 import type { PermissionReply, PendingPermission, SessionStatus } from "@/lib/opencode/types";
 
 export function AppShell() {
   const phase = useServer((s) => s.phase);
   const activeProject = useProjects((s) => s.active);
   const hydrate = useProjects((s) => s.hydrate);
-  const openProject = useProjects((s) => s.openProject);
   const binaryOverride = useProjects((s) => s.binaryOverride);
   const start = useServer((s) => s.start);
   const attach = useServer((s) => s.attach);
@@ -97,6 +97,10 @@ export function AppShell() {
     // event and race on reconnect.
     connect(client!.eventsUrl(), ingestPermission);
 
+    // The per-session hydration cache is scoped to a project; a new server means
+    // a new project and every session needs reloading.
+    loadedFor.current = new Set<string>();
+
     void (async () => {
       const [all, statuses] = await Promise.all([
         client!.listSessions().catch(() => []),
@@ -106,6 +110,17 @@ export function AppShell() {
       for (const [sessionID, status] of Object.entries(statuses)) {
         if (status.type !== "busy") continue;
         useThreads.setState({ busySessionId: sessionID });
+      }
+
+      // Open something on arrival. Without this the composer renders disabled
+      // (there is no active session) and the app looks broken until the user
+      // goes and creates a session by hand.
+      const first = useSessions.getState();
+      if (!first.activeId) {
+        const mostRecent = [...all].sort(
+          (a, b) => (b.time?.updated ?? b.time?.created ?? 0) - (a.time?.updated ?? a.time?.created ?? 0),
+        )[0];
+        if (mostRecent) first.openTab(mostRecent.id);
       }
     })();
 
@@ -131,9 +146,18 @@ export function AppShell() {
 
   const send = useCallback(
     async ({ text, attachments }: ComposerSubmit) => {
-      if (!client || !activeId) return;
+      if (!client) return;
       try {
-        await client.sendPrompt(activeId, {
+        // Typing before any session exists is the common first-run path, so the
+        // first prompt creates the session rather than being swallowed.
+        let target = activeId;
+        if (!target) {
+          const created = await client.createSession();
+          upsert(created);
+          openTab(created.id);
+          target = created.id;
+        }
+        await client.sendPrompt(target, {
           parts: [
             ...(text ? [{ type: "text" as const, text }] : []),
             ...toFileParts(attachments),
@@ -143,7 +167,7 @@ export function AppShell() {
         console.error("prompt failed", error);
       }
     },
-    [client, activeId],
+    [client, activeId, upsert, openTab],
   );
 
   const abort = useCallback(() => {
@@ -172,8 +196,9 @@ export function AppShell() {
   const pickFolder = useCallback(async () => {
     const selected = await open({ directory: true, multiple: false, title: "Open project folder" });
     if (typeof selected !== "string") return;
-    await openProject(selected);
-  }, [openProject]);
+    if (selected === activeProject) return;
+    await switchProject(selected);
+  }, [activeProject]);
 
   const newSession = useCallback(async () => {
     if (!client) return;
@@ -274,8 +299,8 @@ export function AppShell() {
   return (
     <div className="flex h-full flex-col bg-canvas">
       <TitleBar
-        onToggleSidebar={toggleSidebar}
-        onToggleFileTree={toggleFileTree}
+        onToggleSidebar={() => toggleSidebar()}
+        onToggleFileTree={() => toggleFileTree()}
         fileTreeOpen={fileTreeOpen}
         onOpenSettings={() => setSettingsOpen(true)}
       />
@@ -319,8 +344,8 @@ export function AppShell() {
                 onSubmit={send}
                 onAbort={abort}
                 busy={busy}
-                disabled={!activeId}
-                placeholder={activeId ? "Ask opencode to do something…" : "Start a session to begin"}
+                disabled={false}
+                placeholder="Ask opencode to do something…"
                 suggestFiles={(query) => client?.files(query, 12) ?? Promise.resolve([])}
                 suggestCommands={async () => {
                   if (!client) return [];

@@ -1,13 +1,14 @@
 import { useEffect, useRef, useState } from "react";
 import { AnimatePresence, motion } from "motion/react";
-import { ChevronDown, FolderOpen, Plus, Search, Settings2, Trash2 } from "lucide-react";
+import { Check, ChevronDown, FolderOpen, FolderPlus, Plus, Search, Settings2, Trash2 } from "lucide-react";
 import { open } from "@tauri-apps/plugin-dialog";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Kbd } from "@/components/ui/primitives";
-import { projectName, shortenPath } from "@/lib/utils";
+import { projectName, shortenPath, cn } from "@/lib/utils";
 import { filterSessions, sortSessions, useSessions } from "@/state/sessions";
 import { useProjects } from "@/state/projects";
+import { switchProject } from "@/actions/project";
 import { useServer } from "@/state/server";
 import { useThreads } from "@/state/threads";
 import { OpencodeClient } from "@/lib/opencode/client";
@@ -22,6 +23,7 @@ export function Sidebar({ onOpenSettings }: { onOpenSettings(): void }) {
   const busyId = useThreads((s) => s.busySessionId);
 
   const active = useProjects((s) => s.active);
+  const recent = useProjects((s) => s.recent);
   const [menuOpen, setMenuOpen] = useState(false);
   const menuRef = useRef<HTMLDivElement>(null);
 
@@ -67,12 +69,60 @@ export function Sidebar({ onOpenSettings }: { onOpenSettings(): void }) {
               animate={{ opacity: 1, y: 0 }}
               exit={{ opacity: 0, y: -4 }}
               transition={{ duration: 0.14 }}
-              className="absolute inset-x-2.5 top-[calc(100%+4px)] z-30 overflow-hidden rounded-[var(--radius-card)] border border-line bg-overlay py-1 shadow-[var(--shadow-panel)]"
+              className="absolute inset-x-2.5 top-[calc(100%+4px)] z-30 max-h-[60vh] overflow-y-auto rounded-[var(--radius-card)] border border-line bg-overlay py-1 shadow-[var(--shadow-panel)]"
             >
-              <MenuItem icon={<FolderOpen size={12} />} onClick={pickFolder}>
+              {recent.length > 0 && (
+                <>
+                  <p className="px-2.5 pb-1 pt-0.5 text-[0.62rem] font-semibold uppercase tracking-[0.13em] text-ink-ghost">
+                    Recent
+                  </p>
+                  {recent.map((path) => (
+                    <button
+                      key={path}
+                      type="button"
+                      onClick={() => {
+                        setMenuOpen(false);
+                        if (path !== active) void switchProject(path);
+                      }}
+                      className="flex w-full items-center gap-2 px-2.5 py-1.5 text-left transition-colors hover:bg-raised"
+                    >
+                      <FolderOpen
+                        size={12}
+                        className={cn("shrink-0", path === active ? "text-accent" : "text-ink-faint")}
+                      />
+                      <span className="min-w-0 flex-1">
+                        <span className="block truncate text-[0.79rem] text-ink">
+                          {projectName(path)}
+                        </span>
+                        <span className="block truncate font-mono text-[0.64rem] text-ink-ghost">
+                          {path}
+                        </span>
+                      </span>
+                      {path === active && (
+                        <Check size={12} className="shrink-0 text-accent" />
+                      )}
+                    </button>
+                  ))}
+                  <div className="my-1 h-px bg-line" />
+                </>
+              )}
+
+              <MenuItem
+                icon={<FolderPlus size={12} />}
+                onClick={() => {
+                  setMenuOpen(false);
+                  void pickFolder();
+                }}
+              >
                 Open folder…
               </MenuItem>
-              <MenuItem icon={<Settings2 size={12} />} onClick={onOpenSettings}>
+              <MenuItem
+                icon={<Settings2 size={12} />}
+                onClick={() => {
+                  setMenuOpen(false);
+                  onOpenSettings();
+                }}
+              >
                 Settings
                 <Kbd className="ml-auto">⌘,</Kbd>
               </MenuItem>
@@ -187,7 +237,10 @@ function MenuItem({
 
 async function pickFolder() {
   const selected = await open({ directory: true, multiple: false, title: "Open project folder" });
-  if (typeof selected === "string") await useProjects.getState().openProject(selected);
+  if (typeof selected !== "string") return;
+  // Re-selecting the current folder is a no-op rather than a needless restart.
+  if (selected === useProjects.getState().active) return;
+  await switchProject(selected);
 }
 
 async function createSession() {

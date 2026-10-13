@@ -6,6 +6,7 @@
  * surfaces to the UI instead of retrying silently forever.
  */
 
+import { httpFetch } from "@/lib/http";
 import type { ServerEvent } from "./types";
 
 export interface SseHandle {
@@ -82,7 +83,8 @@ function readData(frame: string): string | null {
  * caller like any other; it is a useful liveness signal for the status bar.
  */
 export function subscribe(url: string, options: SseOptions): SseHandle {
-  const doFetch = options.fetchImpl ?? fetch;
+  // Must go through httpFetch: a bare `fetch` reference loses its receiver.
+  const doFetch = options.fetchImpl ?? httpFetch;
   const baseDelay = options.retryDelayMs ?? 500;
   const maxDelay = options.maxRetryDelayMs ?? 10_000;
 
