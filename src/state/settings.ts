@@ -145,6 +145,23 @@ export function getPath(document: unknown, path: string[], fallback: unknown = u
   return current === undefined ? fallback : current;
 }
 
+/**
+ * Parse the current draft, falling back to an empty document.
+ *
+ * A half-typed config would otherwise throw on every keystroke in the
+ * permission controls, which read from the draft to show pending edits.
+ */
+export function safeParseDraft(text: string): Record<string, unknown> {
+  try {
+    const parsed = JSON.parse(text) as unknown;
+    return parsed && typeof parsed === "object" && !Array.isArray(parsed)
+      ? (parsed as Record<string, unknown>)
+      : {};
+  } catch {
+    return {};
+  }
+}
+
 /** Pretty-print a config document for the editor. */
 export function formatConfig(value: unknown): string {
   return `${JSON.stringify(value, null, 2)}\n`;

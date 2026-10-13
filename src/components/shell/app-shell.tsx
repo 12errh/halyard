@@ -93,6 +93,11 @@ export function AppShell() {
     preloadHighlighter();
   }, [hydrate, attach]);
 
+  // The default model is scoped per project, so switching repos must reload it.
+  useEffect(() => {
+    useModels.getState().sync(activeProject);
+  }, [activeProject]);
+
   // Start the server once we know whether a project was remembered.
   //
   // This must depend on the hydrated values, not just on `start`: `hydrate()`

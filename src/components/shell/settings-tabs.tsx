@@ -24,6 +24,8 @@ import { formatContext } from "@/lib/opencode/models";
 import { allModels, useSystem, type McpState } from "@/state/system";
 import { CONFIG_SECTIONS, describeValue, getPath, useSettings } from "@/state/settings";
 import { useMode } from "@/state/mode";
+import { useModels } from "@/state/models";
+import { useServer } from "@/state/server";
 import { useUi } from "@/state/ui";
 import { FONT_OPTIONS } from "@/lib/fonts";
 import { cn } from "@/lib/utils";
@@ -381,12 +383,18 @@ export function ProvidersTab() {
 export function ModelsTab() {
   const system = useSystem();
   const effective = useSettings((s) => s.effective);
+  const draft = useSettings((s) => s.draft);
+  const save = useSettings((s) => s.save);
+  const project = useServer((s) => s.project);
+
   const [query, setQuery] = useState("");
   const [providerFilter, setProviderFilter] = useState<string>("");
   const [adding, setAdding] = useState(false);
   const [form, setForm] = useState({ providerID: "", modelID: "", name: "", npm: "", baseURL: "" });
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const [savingDefault, setSavingDefault] = useState(false);
+  const [defaultNotice, setDefaultNotice] = useState<{ kind: "ok" | "error"; text: string } | null>(null);
 
   const models = useMemo(() => allModels(system), [system]);
 
@@ -408,6 +416,45 @@ export function ModelsTab() {
   }, [models, query, providerFilter]);
 
   const configured = getPath(effective, ["model"], null);
+  const selection = useModels((m) => m.selection);
+  const scoped = useModels((m) => m.scoped(project));
+
+  /** Write the default into opencode's config, which needs a restart to apply. */
+  const commitDefault = async (providerID: string, modelID: string) => {
+    setSavingDefault(true);
+    setDefaultNotice(null);
+    try {
+      // Apply locally first so the picker reflects it immediately, then persist
+      // it into opencode's own config so new sessions inherit it too.
+      useModels.getState().select({ providerID, modelID });
+      const { setPath, formatConfig, safeParseDraft } = await import("@/state/settings");
+      const next = setPath(safeParseDraft(draft), ["model"], `${providerID}/${modelID}`);
+      useSettings.getState().setDraft(formatConfig(next));
+      const ok = await save();
+      setDefaultNotice(
+        ok
+          ? { kind: "ok", text: `Default set to ${providerID}/${modelID}` }
+          : { kind: "error", text: "could not save the config" },
+      );
+    } finally {
+      setSavingDefault(false);
+    }
+  };
+
+  const clearDefault = async () => {
+    setSavingDefault(true);
+    setDefaultNotice(null);
+    try {
+      useModels.getState().clear();
+      const { setPath, formatConfig, safeParseDraft } = await import("@/state/settings");
+      const next = setPath(safeParseDraft(draft), ["model"], null);
+      useSettings.getState().setDraft(formatConfig(next));
+      await save();
+      setDefaultNotice({ kind: "ok", text: "Default cleared — the picker decides" });
+    } finally {
+      setSavingDefault(false);
+    }
+  };
 
   const submit = async () => {
     setBusy(true);
@@ -425,11 +472,17 @@ export function ModelsTab() {
 
   return (
     <div>
-      <Group label="Default model" hint="New sessions, unless you pick one in the composer.">
-        <div className="rounded-[var(--radius-card)] border border-line bg-raised/40 px-2.5 py-2 font-mono text-[0.78rem] text-ink-muted">
-          {typeof configured === "string" ? configured : "not set — the picker decides"}
-        </div>
-      </Group>
+      <DefaultModelSection
+        models={rows}
+        configured={typeof configured === "string" ? configured : null}
+        selection={selection}
+        scoped={scoped}
+        saving={savingDefault}
+        onPick={(providerID, modelID) => void commitDefault(providerID, modelID)}
+        onClear={() => void clearDefault()}
+      />
+
+      {defaultNotice && <Notice kind={defaultNotice.kind}>{defaultNotice.text}</Notice>}
 
       <Group label="Browse models" hint={`${rows.length} shown`}>
         <SearchInput value={query} onChange={setQuery} placeholder="Search models…" />
@@ -471,6 +524,14 @@ export function ModelsTab() {
                       {model.limit?.context ? ` · ${formatContext(model.limit.context)} ctx` : ""}
                     </span>
                   </span>
+                  <Button
+                    size="sm"
+                    variant="ghost"
+                    disabled={savingDefault}
+                    onClick={() => void commitDefault(model.providerID, model.id)}
+                  >
+                    Make default
+                  </Button>
                 </div>
               );
             })
@@ -537,6 +598,148 @@ export function ModelsTab() {
         </AnimatePresence>
       </Group>
     </div>
+  );
+}
+
+/**
+ * Default-model control.
+ *
+ * Two separate things are in play and conflating them would confuse:
+ * the picker's choice is a Halyard preference that applies instantly, while
+ * opencode's own `model` config key needs a restart. Both are written so the
+ * default survives a fresh clone or a different machine.
+ */
+function DefaultModelSection({
+  models,
+  configured,
+  selection,
+  scoped,
+  saving,
+  onPick,
+  onClear,
+}: {
+  models: Array<{ providerID: string; id: string; name?: string; connected: boolean }>;
+  configured: string | null;
+  selection: { providerID: string; modelID: string } | null;
+  scoped: boolean;
+  saving: boolean;
+  onPick(providerID: string, modelID: string): void;
+  onClear(): void;
+}) {
+  const [open, setOpen] = useState(false);
+  const [query, setQuery] = useState("");
+
+  const filtered = useMemo(() => {
+    const needle = query.trim().toLowerCase();
+    return models
+      .filter((model) => !needle || `${model.id} ${model.name ?? ""} ${model.providerID}`.toLowerCase().includes(needle))
+      .slice(0, 60);
+  }, [models, query]);
+
+  const label =
+    (selection &&
+      models.find((m) => m.providerID === selection.providerID && m.id === selection.modelID)?.name) ||
+    selection?.modelID ||
+    configured ||
+    "Not set — the picker decides";
+
+  return (
+    <Group
+      label="Default model"
+      hint={scoped ? "this project" : configured ? "from config" : "picker decides"}
+    >
+      <div className="flex items-center gap-1.5">
+        <button
+          type="button"
+          disabled={saving}
+          onClick={() => setOpen((v) => !v)}
+          aria-expanded={open}
+          aria-haspopup="listbox"
+          className="flex min-w-0 flex-1 items-center gap-2 rounded-[7px] border border-line bg-surface px-2.5 py-1.5 text-left transition-colors hover:border-line-strong disabled:opacity-50"
+        >
+          <SparklesIcon />
+          <span className="min-w-0 flex-1 truncate text-[0.82rem] text-ink">{label}</span>
+          {saving && <Loader2 size={12} className="shrink-0 animate-spin text-ink-faint" />}
+          <ChevronDownIcon open={open} />
+        </button>
+
+        <Button size="sm" variant="ghost" disabled={saving} onClick={onClear} title="Clear the default">
+          Clear
+        </Button>
+      </div>
+
+      {configured && (
+        <p className="mt-1.5 text-[0.7rem] text-ink-ghost">
+          opencode config has <span className="font-mono">{configured}</span>. Changing this writes
+          the config and restarts opencode.
+        </p>
+      )}
+
+      <AnimatePresence>
+        {open && (
+          <motion.div
+            initial={{ opacity: 0, y: -4 }}
+            animate={{ opacity: 1, y: 0 }}
+            exit={{ opacity: 0, y: -4 }}
+            transition={{ duration: 0.15 }}
+            className="relative z-10 mt-1.5"
+          >
+            <SearchInput value={query} onChange={setQuery} placeholder="Search models…" />
+            <div className="scroll-area max-h-64 overflow-auto rounded-[var(--radius-card)] border border-line">
+              {filtered.length === 0 ? (
+                <Empty>No models match.</Empty>
+              ) : (
+                filtered.map((model) => {
+                  const active =
+                    selection?.providerID === model.providerID && selection?.modelID === model.id;
+                  return (
+                    <button
+                      key={`${model.providerID}/${model.id}`}
+                      type="button"
+                      onClick={() => {
+                        onPick(model.providerID, model.id);
+                        setOpen(false);
+                        setQuery("");
+                      }}
+                      className="flex w-full items-center gap-2 border-b border-line/60 px-2.5 py-1.5 text-left last:border-b-0 hover:bg-raised"
+                    >
+                      <span className="w-3 shrink-0">
+                        {active && <Check size={12} className="text-accent" />}
+                      </span>
+                      <span className="min-w-0 flex-1">
+                        <span className="block truncate text-[0.8rem] text-ink">
+                          {model.name ?? model.id}
+                        </span>
+                        <span className="block truncate font-mono text-[0.64rem] text-ink-ghost">
+                          {model.providerID}
+                          {!model.connected ? " · not connected" : ""}
+                        </span>
+                      </span>
+                    </button>
+                  );
+                })
+              )}
+            </div>
+          </motion.div>
+        )}
+      </AnimatePresence>
+    </Group>
+  );
+}
+
+function SparklesIcon() {
+  return (
+    <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" className="shrink-0 text-accent">
+      <path d="M12 3v3M12 18v3M3 12h3M18 12h3M5.6 5.6l2.1 2.1M16.3 16.3l2.1 2.1M18.4 5.6l-2.1 2.1M7.7 16.3l-2.1 2.1" />
+    </svg>
+  );
+}
+
+function ChevronDownIcon({ open }: { open: boolean }) {
+  return (
+    <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" className={cn("shrink-0 text-ink-ghost transition-transform duration-150", open && "rotate-180")}>
+      <path d="m6 9 6 6 6-6" />
+    </svg>
   );
 }
 

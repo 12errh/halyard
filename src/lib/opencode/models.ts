@@ -222,34 +222,84 @@ export function rankModels(models: FlatModel[], query: string): FlatModel[] {
   });
 }
 
-/** Remember the last model per project so the picker opens where you left off. */
-const STORAGE_KEY = "halyard.model";
+/**
+ * The remembered default model.
+ *
+ * Keyed by project. A single global default would be wrong for a tool you use
+ * across several repos — the model that suits a Rust service is rarely the one
+ * you want for a docs site — and switching projects should not silently change
+ * which model you get.
+ *
+ * This is Halyard's own preference and applies instantly. opencode's own
+ * `model` config key is a separate, slower thing: it lives in the config file
+ * and only takes effect after a restart.
+ */
+
+const STORE_KEY = "halyard.models";
+const GLOBAL = "*";
 
 export interface ModelSelection {
   providerID: string;
   modelID: string;
 }
 
-export function readModelSelection(): ModelSelection | null {
+type Store = Record<string, ModelSelection>;
+
+function readStore(): Store {
   try {
-    const raw = localStorage.getItem(STORAGE_KEY);
-    if (!raw) return null;
-    const parsed = JSON.parse(raw) as Partial<ModelSelection>;
-    if (typeof parsed.providerID === "string" && typeof parsed.modelID === "string") {
-      return { providerID: parsed.providerID, modelID: parsed.modelID };
-    }
+    const raw = localStorage.getItem(STORE_KEY);
+    if (!raw) return {};
+    const parsed = JSON.parse(raw) as Store;
+    return parsed && typeof parsed === "object" ? parsed : {};
   } catch {
-    // Corrupt value: fall through to the default.
+    // Corrupt value: start clean rather than break the picker.
+    return {};
   }
-  return null;
 }
 
-export function writeModelSelection(selection: ModelSelection): void {
+function writeStore(store: Store) {
   try {
-    localStorage.setItem(STORAGE_KEY, JSON.stringify(selection));
+    localStorage.setItem(STORE_KEY, JSON.stringify(store));
   } catch {
     // Persistence is a convenience, not a requirement.
   }
+}
+
+function isSelection(value: unknown): value is ModelSelection {
+  if (!value || typeof value !== "object") return false;
+  const record = value as Record<string, unknown>;
+  return typeof record.providerID === "string" && typeof record.modelID === "string";
+}
+
+/** The default for a project, falling back to the cross-project default. */
+export function readModelSelection(project?: string | null): ModelSelection | null {
+  const store = readStore();
+  const scoped = project ? store[project] : undefined;
+  if (isSelection(scoped)) return scoped;
+  return isSelection(store[GLOBAL]) ? store[GLOBAL] : null;
+}
+
+/** Set the default for one project, leaving other projects untouched. */
+export function writeModelSelection(selection: ModelSelection, project?: string | null): void {
+  const store = readStore();
+  store[project ?? GLOBAL] = selection;
+  writeStore(store);
+}
+
+/** Clear a project's override so it inherits the cross-project default again. */
+export function clearModelSelection(project?: string | null): void {
+  const store = readStore();
+  if (!project) {
+    delete store[GLOBAL];
+  } else {
+    delete store[project];
+  }
+  writeStore(store);
+}
+
+/** Does this project have its own default, or is it inheriting? */
+export function hasScopedSelection(project?: string | null): boolean {
+  return isSelection(readStore()[project ?? GLOBAL]);
 }
 
 export function labelFor(models: FlatModel[], selection: ModelSelection | null): string {

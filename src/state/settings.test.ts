@@ -1,4 +1,4 @@
-import { describe, expect, it } from "vitest";
+import { beforeEach, describe, expect, it } from "vitest";
 import {
   aggregateUsage,
   formatCost,
@@ -6,7 +6,21 @@ import {
   sessionUsage,
   usageBreakdown,
 } from "@/lib/usage";
-import { describeValue, formatConfig, getPath, setPath, CONFIG_SECTIONS } from "@/state/settings";
+import {
+  CONFIG_SECTIONS,
+  describeValue,
+  formatConfig,
+  getPath,
+  safeParseDraft,
+  setPath,
+} from "@/state/settings";
+import { useModels } from "@/state/models";
+import {
+  clearModelSelection,
+  hasScopedSelection,
+  readModelSelection,
+  writeModelSelection,
+} from "@/lib/opencode/models";
 import { formatBytes } from "@/actions/transfer";
 import type { Session } from "@/lib/opencode/types";
 
@@ -164,5 +178,78 @@ describe("formatBytes", () => {
     expect(formatBytes(512)).toBe("512 B");
     expect(formatBytes(2048)).toBe("2.0 KB");
     expect(formatBytes(5 * 1024 * 1024)).toBe("5.0 MB");
+  });
+});
+describe("default model scope", () => {
+  const A = { providerID: "opencode", modelID: "exo-free" };
+  const B = { providerID: "opencode", modelID: "cat-jam-free" };
+
+  beforeEach(() => {
+    localStorage.clear();
+    useModels.getState().reset();
+  });
+
+  it("starts with no default", () => {
+    expect(readModelSelection("/repo/a")).toBeNull();
+  });
+
+  it("stores a default per project", () => {
+    writeModelSelection(A, "/repo/a");
+    writeModelSelection(B, "/repo/b");
+    expect(readModelSelection("/repo/a")).toEqual(A);
+    expect(readModelSelection("/repo/b")).toEqual(B);
+  });
+
+  it("does not let one project's choice leak into another", () => {
+    writeModelSelection(A, "/repo/a");
+    expect(readModelSelection("/repo/b")).toBeNull();
+  });
+
+  it("falls back to the cross-project default when a project has none", () => {
+    writeModelSelection(A, null);
+    writeModelSelection(B, "/repo/b");
+    expect(readModelSelection("/repo/c")).toEqual(A);
+    // The project override still wins where it exists.
+    expect(readModelSelection("/repo/b")).toEqual(B);
+  });
+
+  it("clearing a project restores the shared default", () => {
+    writeModelSelection(A, null);
+    writeModelSelection(B, "/repo/b");
+    clearModelSelection("/repo/b");
+    expect(readModelSelection("/repo/b")).toEqual(A);
+  });
+
+  it("reports whether a project has its own default", () => {
+    writeModelSelection(A, null);
+    writeModelSelection(B, "/repo/b");
+    expect(hasScopedSelection("/repo/b")).toBe(true);
+    expect(hasScopedSelection("/repo/a")).toBe(false);
+  });
+
+  it("survives a corrupt store", () => {
+    localStorage.setItem("halyard.models", "{not json");
+    expect(readModelSelection("/repo/a")).toBeNull();
+  });
+
+  it("ignores a half-written entry", () => {
+    localStorage.setItem("halyard.models", JSON.stringify({ "/repo/a": { providerID: "x" } }));
+    expect(readModelSelection("/repo/a")).toBeNull();
+  });
+});
+
+describe("safeParseDraft", () => {
+  it("parses a valid document", () => {
+    expect(safeParseDraft('{"a":1}')).toEqual({ a: 1 });
+  });
+
+  it("falls back while the draft is mid-edit", () => {
+    expect(safeParseDraft("{ \"a\": ")).toEqual({});
+    expect(safeParseDraft("")).toEqual({});
+  });
+
+  it("rejects a non-object document", () => {
+    expect(safeParseDraft("[1,2]")).toEqual({});
+    expect(safeParseDraft("42")).toEqual({});
   });
 });
