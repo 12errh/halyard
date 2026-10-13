@@ -14,16 +14,46 @@ use tauri::{AppHandle, Manager};
 /// not a history log.
 pub const MAX_RECENT_PROJECTS: usize = 12;
 
-#[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq, Eq)]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "camelCase", default)]
 pub struct Settings {
     pub recent_projects: Vec<PathBuf>,
     pub last_project: Option<PathBuf>,
     /// Explicit `opencode` executable, overriding PATH lookup.
     pub binary_override: Option<PathBuf>,
+    /// Show an icon in the system tray. Defaults on: the tray is what makes
+    /// close-to-tray survivable.
+    pub show_tray: bool,
+    /// Hiding the window on close instead of quitting. Only meaningful while a
+    /// tray icon is showing; see [`Settings::effective_close_to_tray`].
+    pub close_to_tray: bool,
+    /// Notify when an agent finishes while the window is not in front.
+    pub notify_on_finish: bool,
+}
+
+impl Default for Settings {
+    fn default() -> Self {
+        Self {
+            recent_projects: Vec::new(),
+            last_project: None,
+            binary_override: None,
+            show_tray: true,
+            close_to_tray: true,
+            notify_on_finish: true,
+        }
+    }
 }
 
 impl Settings {
+    /// Closing can only hide to the tray when there is a tray to return to.
+    ///
+    /// Otherwise the close button would appear to do nothing at all: the window
+    /// would vanish with no icon left to bring it back. Turning the tray off
+    /// therefore forces close to mean close.
+    pub fn effective_close_to_tray(&self) -> bool {
+        self.close_to_tray && self.show_tray
+    }
+
     /// Insert `path` at the front, de-duplicated, capped to `MAX_RECENT_PROJECTS`.
     ///
     /// Pure and separately tested because it is the kind of bookkeeping that
@@ -176,5 +206,67 @@ mod tests {
     #[test]
     fn garbage_json_degrades_to_defaults() {
         assert!(serde_json::from_str::<Settings>("not json").is_err());
+    }
+
+    #[test]
+    fn an_older_file_gains_the_window_defaults() {
+        // A file written before slice 4 carries no tray keys at all. They must
+        // come back as the defaults rather than `false`, or every existing
+        // install would silently lose its tray icon.
+        let restored: Settings = serde_json::from_str(
+            r#"{"recentProjects":["/work/api"],"lastProject":"/work/api"}"#,
+        )
+        .unwrap();
+        assert_eq!(restored.recent_projects, vec![PathBuf::from("/work/api")]);
+        assert!(restored.show_tray);
+        assert!(restored.close_to_tray);
+        assert!(restored.notify_on_finish);
+    }
+
+    #[test]
+    fn hiding_the_tray_disables_close_to_tray() {
+        // Without a tray icon there would be no way back from a hidden window.
+        let mut settings = Settings::default();
+        settings.show_tray = false;
+        assert!(!settings.effective_close_to_tray());
+    }
+
+    #[test]
+    fn close_to_tray_holds_when_the_tray_is_visible() {
+        let mut settings = Settings::default();
+        settings.show_tray = true;
+        settings.close_to_tray = true;
+        assert!(settings.effective_close_to_tray());
+    }
+
+    #[test]
+    fn a_user_who_wants_close_to_quit_gets_it() {
+        let mut settings = Settings::default();
+        settings.close_to_tray = false;
+        assert!(!settings.effective_close_to_tray());
+    }
+
+    #[test]
+    fn window_preferences_persist_under_their_camel_case_keys() {
+        // The frontend writes these keys by name. A stray serde rename would
+        // persist under a different key and the preference would silently
+        // reset on every launch — so pin the wire format.
+        let settings = Settings::default();
+        let value: serde_json::Value = serde_json::to_value(&settings).unwrap();
+
+        assert_eq!(value["showTray"], serde_json::json!(true));
+        assert_eq!(value["closeToTray"], serde_json::json!(true));
+        assert_eq!(value["notifyOnFinish"], serde_json::json!(true));
+    }
+
+    #[test]
+    fn reading_the_new_keys_from_disk_works() {
+        let restored: Settings = serde_json::from_str(
+            r#"{"showTray":false,"closeToTray":false,"notifyOnFinish":false}"#,
+        )
+        .unwrap();
+        assert!(!restored.show_tray);
+        assert!(!restored.close_to_tray);
+        assert!(!restored.notify_on_finish);
     }
 }

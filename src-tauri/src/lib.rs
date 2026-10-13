@@ -1,11 +1,14 @@
 //! Halyard — a native desktop shell for the opencode coding agent.
 
+pub mod app_menu;
+pub mod attention;
 pub mod binary;
 pub mod config;
 pub mod probe;
-pub mod transfer;
 pub mod server;
 pub mod settings;
+pub mod transfer;
+pub mod tray;
 
 use std::sync::Arc;
 
@@ -14,14 +17,13 @@ use tauri::Manager;
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
+    let manager = Arc::new(ServerManager::new());
+
     tauri::Builder::default()
         .plugin(tauri_plugin_single_instance::init(|app, _argv, _cwd| {
             // Second launch focuses the existing window instead of spawning a
             // rival server bound to the same project.
-            if let Some(window) = app.get_webview_window("main") {
-                let _ = window.unminimize();
-                let _ = window.set_focus();
-            }
+            crate::tray::show_main(app);
         }))
         .plugin(tauri_plugin_opener::init())
         .plugin(tauri_plugin_dialog::init())
@@ -31,7 +33,35 @@ pub fn run() {
             tauri_plugin_autostart::MacosLauncher::LaunchAgent,
             None,
         ))
-        .manage(Arc::new(ServerManager::new()))
+        .manage(manager)
+        .setup(|app| {
+            let handle = app.handle().clone();
+
+            // Tray is optional. Some Linux desktops have no status area at
+            // all, and a missing tray must not stop the app from opening.
+            if settings::load(&handle).show_tray {
+                crate::tray::build(&handle)?;
+            }
+
+            // Windows and Linux expect a menu bar; without one the usual
+            // clipboard and select-all shortcuts silently do nothing.
+            crate::app_menu::build(&handle)?;
+
+            Ok(())
+        })
+        .on_window_event(|window, event| {
+            // Hiding rather than closing keeps a running agent alive. The
+            // `prevent_close` call is what stops Tauri tearing the process
+            // down; `hide` alone would still quit.
+            let tauri::WindowEvent::CloseRequested { api, .. } = event else {
+                return;
+            };
+
+            if settings::load(window.app_handle()).effective_close_to_tray() {
+                api.prevent_close();
+                let _ = window.hide();
+            }
+        })
         .invoke_handler(tauri::generate_handler![
             config::read_config_file,
             config::write_config_file,
@@ -46,6 +76,8 @@ pub fn run() {
             settings::save_settings,
             settings::remember_project,
             settings::forget_project,
+            attention::set_attention_command,
+            tray::set_tray_visible,
         ])
         .build(tauri::generate_context!())
         .expect("failed to build Halyard")
@@ -53,7 +85,10 @@ pub fn run() {
             // Kill the child server on every exit path. An orphaned
             // `opencode serve` would hold a database lock and confuse the next
             // launch.
-            if let tauri::RunEvent::ExitRequested { .. } | tauri::RunEvent::Exit = event {
+            if matches!(
+                event,
+                tauri::RunEvent::ExitRequested { .. } | tauri::RunEvent::Exit
+            ) {
                 server::shutdown_on_exit(app);
             }
         });

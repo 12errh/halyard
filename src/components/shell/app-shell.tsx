@@ -23,6 +23,9 @@ import { toFileParts } from "@/lib/attachments";
 import { normaliseDiff } from "@/lib/diff";
 import type { MessageEntry } from "@/lib/opencode/thread";
 import { useProjects } from "@/state/projects";
+import { useDesktop } from "@/state/desktop";
+import { announceFinish, useNativeShellActions, useSessionActivity } from "./desktop-bridge";
+import { setAttention } from "@/lib/desktop";
 import { useServer } from "@/state/server";
 import { useSessions } from "@/state/sessions";
 import { useThreads } from "@/state/threads";
@@ -57,6 +60,7 @@ export function AppShell() {
   const toggleFileTree = useUi((s) => s.toggleFileTree);
   const settingsOpen = useUi((s) => s.settingsOpen);
   const setSettingsOpen = useUi((s) => s.setSettingsOpen);
+  const notifyOnFinish = useDesktop((s) => s.notifyOnFinish);
   const paletteOpen = useUi((s) => s.paletteOpen);
   const togglePalette = useUi((s) => s.togglePalette);
 
@@ -67,6 +71,8 @@ export function AppShell() {
   const openTab = useSessions((s) => s.openTab);
   const closeTab = useSessions((s) => s.closeTab);
   const stepTab = useSessions((s) => s.stepTab);
+  const allStatus = useSessions((s) => s.status);
+  const hydrateDesktop = useDesktop((s) => s.hydrate);
 
   const thread = useThreads((s) => (activeId ? s.threads[activeId] : undefined));
   const busyId = useThreads((s) => s.busySessionId);
@@ -376,6 +382,64 @@ export function AppShell() {
     window.addEventListener("keydown", onKey);
     return () => window.removeEventListener("keydown", onKey);
   }, [togglePalette, settingsOpen, setSettingsOpen, stepTab, toggleSidebar, toggleFileTree, closeTab, activeId, newSession]);
+
+  // --- Desktop shell -------------------------------------------------------
+
+  // Finished sessions the user has not looked at yet. Kept in a ref because it
+  // only drives an imperative call and a badge, and re-rendering the whole
+  // shell every time a background agent finishes would be wasteful.
+  const unread = useRef(new Set<string>());
+
+  useEffect(() => {
+    void hydrateDesktop();
+  }, [hydrateDesktop]);
+
+  const onFinished = useCallback(
+    async (sessionID: string) => {
+      const info = sessions.find((s) => s.id === sessionID);
+      unread.current.add(sessionID);
+
+      await announceFinish({
+        enabled: notifyOnFinish,
+        title: info?.title ?? "Agent finished",
+        body: info?.title ?? "The agent finished a turn.",
+        unread: unread.current.size,
+      });
+    },
+    [sessions, notifyOnFinish],
+  );
+
+  useSessionActivity(allStatus, onFinished);
+
+  // Opening a session clears its badge: a marker for a result the user is
+  // already reading is a lie.
+  useEffect(() => {
+    if (!activeId) return;
+    if (!unread.current.delete(activeId)) return;
+    void setAttention(unread.current.size);
+  }, [activeId]);
+
+  // And so does regaining focus — the window is in front, so everything in it
+  // has been seen.
+  useEffect(() => {
+    const onFocus = () => {
+      if (document.visibilityState !== "visible") return;
+      if (!unread.current.size) return;
+      unread.current.clear();
+      void setAttention(0);
+    };
+    window.addEventListener("focus", onFocus);
+    document.addEventListener("visibilitychange", onFocus);
+    return () => {
+      window.removeEventListener("focus", onFocus);
+      document.removeEventListener("visibilitychange", onFocus);
+    };
+  }, []);
+
+  useNativeShellActions({
+    onNewThread: () => void newSession(),
+    onOpenSettings: () => setSettingsOpen(true),
+  });
 
   // --- Render --------------------------------------------------------------
 

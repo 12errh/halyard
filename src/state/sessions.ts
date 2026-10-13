@@ -7,7 +7,7 @@
  */
 
 import { create } from "zustand";
-import type { ServerEvent, Session } from "@/lib/opencode/types";
+import type { ServerEvent, Session, SessionStatus } from "@/lib/opencode/types";
 import { truncate } from "@/lib/utils";
 
 interface SessionStore {
@@ -51,12 +51,21 @@ interface SessionStore {
    * loaded once stays stuck on the seeded "New session - <timestamp>".
    */
   ingest(event: ServerEvent): void;
+  /**
+   * Busy state for every session, not just the open one.
+   *
+   * The chat only renders the active thread, but a background session
+   * finishing is exactly when a notification is worth sending — so the status
+   * has to be tracked app-wide.
+   */
+  status: Record<string, SessionStatus>;
 }
 
 export const useSessions = create<SessionStore>((set) => ({
   sessions: [],
   tabs: [],
   activeId: null,
+  status: {},
   query: "",
   children: {},
   expandedParents: {},
@@ -144,9 +153,17 @@ export const useSessions = create<SessionStore>((set) => ({
         return { ...state, sessions };
       }
 
+      if (event.type === "session.status") {
+        const props = event.properties as { sessionID?: string; status?: SessionStatus };
+        if (!props.sessionID || !props.status) return state;
+        return { ...state, status: { ...state.status, [props.sessionID]: props.status } };
+      }
+
       if (event.type === "session.deleted") {
         const id = (event.properties as { sessionID?: string }).sessionID;
         if (!id) return state;
+        const status = { ...state.status };
+        delete status[id];
         const sessions = state.sessions.filter((s) => s.id !== id);
         const tabs = state.tabs.filter((t) => t !== id);
         const children = Object.fromEntries(
@@ -158,6 +175,7 @@ export const useSessions = create<SessionStore>((set) => ({
         return {
           ...state,
           sessions,
+          status,
           tabs,
           children,
           activeId: state.activeId === id ? (tabs[tabs.length - 1] ?? null) : state.activeId,

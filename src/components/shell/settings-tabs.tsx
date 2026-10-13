@@ -17,7 +17,7 @@ import { save as saveDialog } from "@tauri-apps/plugin-dialog";
 import { openPath } from "@tauri-apps/plugin-opener";
 import { Button } from "@/components/ui/button";
 import { Input, Textarea } from "@/components/ui/input";
-import { Badge, SectionLabel } from "@/components/ui/primitives";
+import { Badge, SectionLabel, Switch } from "@/components/ui/primitives";
 import { SkeletonBlock, SkeletonCard, SkeletonList, SkeletonRow } from "@/components/ui/skeleton";
 import { addCustomAgent, addCustomModel, removeCustomAgent } from "@/actions/config-write";
 import { formatContext } from "@/lib/opencode/models";
@@ -27,6 +27,7 @@ import { useMode } from "@/state/mode";
 import { useModels } from "@/state/models";
 import { useServer } from "@/state/server";
 import { useUi } from "@/state/ui";
+import { useDesktop } from "@/state/desktop";
 import { FONT_OPTIONS } from "@/lib/fonts";
 import { cn } from "@/lib/utils";
 
@@ -128,6 +129,7 @@ function Notice({ kind, children }: { kind: "ok" | "error"; children: ReactNode 
 export function AppearanceTab() {
   const ui = useUi();
   const appearance = ui.appearance;
+  const desktop = useDesktop();
 
   return (
     <div>
@@ -192,6 +194,43 @@ export function AppearanceTab() {
           />
           Reduce animation
         </label>
+      </Group>
+
+      <Group label="Desktop" hint="How Halyard behaves outside the window.">
+        <div className="divide-y divide-line/60">
+          <Switch
+            label="Show tray icon"
+            hint="Keeps Halyard reachable after the window is closed."
+            checked={desktop.showTray}
+            onChange={(next) => desktop.update({ showTray: next })}
+          />
+          <Switch
+            label="Close to tray"
+            hint={
+              desktop.showTray
+                ? "Closing the window hides it and leaves the agent running."
+                : "Needs the tray icon — there would be no way back otherwise."
+            }
+            checked={desktop.closeToTray}
+            disabled={!desktop.showTray}
+            onChange={(next) => desktop.update({ closeToTray: next })}
+          />
+          <Switch
+            label="Launch at login"
+            hint="Starts Halyard when you sign in."
+            checked={desktop.launchAtLogin}
+            onChange={(next) => desktop.update({ launchAtLogin: next })}
+          />
+        </div>
+      </Group>
+
+      <Group label="Notifications">
+        <Switch
+          label="Notify when the agent finishes"
+          hint="Only while Halyard is in the background, so it never interrupts you mid-sentence."
+          checked={desktop.notifyOnFinish}
+          onChange={(next) => desktop.update({ notifyOnFinish: next })}
+        />
       </Group>
     </div>
   );

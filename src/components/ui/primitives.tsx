@@ -99,3 +99,56 @@ export function RuleLabel({ children }: { children: ReactNode }) {
     </div>
   );
 }
+
+/**
+ * A labelled on/off switch.
+ *
+ * Built from a real checkbox rather than a div so it is reachable by keyboard,
+ * announced correctly, and toggles on space as well as click.
+ */
+export function Switch({
+  checked,
+  onChange,
+  label,
+  hint,
+  disabled = false,
+}: {
+  checked: boolean;
+  onChange(next: boolean): void;
+  label: string;
+  hint?: string;
+  disabled?: boolean;
+}) {
+  const id = `switch-${label.replace(/\W+/g, "-").toLowerCase()}`;
+
+  return (
+    <div className={cn("flex items-start justify-between gap-4 py-2", disabled && "opacity-50")}>
+      <div className="min-w-0">
+        <label htmlFor={id} className="block cursor-pointer text-[0.82rem] text-ink">
+          {label}
+        </label>
+        {hint && <p className="mt-0.5 text-[0.7rem] leading-relaxed text-ink-ghost">{hint}</p>}
+      </div>
+
+      <input
+        id={id}
+        type="checkbox"
+        role="switch"
+        checked={checked}
+        disabled={disabled}
+        onChange={(event) => onChange(event.target.checked)}
+        className="mt-0.5 h-[18px] w-[32px] shrink-0 cursor-pointer appearance-none rounded-full border border-line-strong bg-raised transition-colors checked:border-accent checked:bg-accent disabled:cursor-not-allowed"
+        style={{
+          // The knob is drawn with a background image so the control needs no
+          // wrapper element and keeps the native checkbox semantics.
+          backgroundImage: checked
+            ? "url(\"data:image/svg+xml;utf8,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 14 14'><circle cx='9' cy='7' r='5' fill='%23fffaf7'/></svg>\")"
+            : "url(\"data:image/svg+xml;utf8,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 14 14'><circle cx='5' cy='7' r='5' fill='%23888078'/></svg>\")",
+          backgroundRepeat: "no-repeat",
+          backgroundPosition: checked ? "right 2px center" : "left 2px center",
+          backgroundSize: "14px 14px",
+        }}
+      />
+    </div>
+  );
+}

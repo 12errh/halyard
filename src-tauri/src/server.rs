@@ -260,42 +260,61 @@ impl ServerManager {
         }
     }
 
-    /// Terminate the child, escalating to SIGKILL if it ignores SIGTERM.
+    /// Terminate the child, escalating if it ignores the polite request.
     pub async fn stop(&self, app: &AppHandle) {
         let Some(mut running) = self.inner.lock().await.take() else {
             self.set_status(app, ServerStatus::Stopped).await;
             return;
         };
 
-        let pid = running.child.id();
-        if let Some(pid) = pid {
-            // SIGTERM first so opencode can flush its database and close cleanly.
-            unsafe {
-                libc::kill(pid as i32, libc::SIGTERM);
-            }
-
-            let grace_deadline = Instant::now() + TERMINATE_GRACE;
-            loop {
-                match running.child.try_wait() {
-                    Ok(Some(_)) => break,
-                    Ok(None) if Instant::now() < grace_deadline => {
-                        tokio::time::sleep(Duration::from_millis(50)).await;
-                    }
-                    _ => {
-                        let _ = running.child.start_kill();
-                        let _ = tokio::time::timeout(
-                            Duration::from_secs(2),
-                            running.child.wait(),
-                        )
-                        .await;
-                        break;
-                    }
-                }
-            }
-        }
+        terminate(&mut running.child).await;
 
         self.set_status(app, ServerStatus::Stopped).await;
     }
+}
+
+/// Ask the child to exit, then insist.
+///
+/// The two platforms need different politeness: Unix has SIGTERM, which lets
+/// opencode flush its database, while Windows has no equivalent signal and
+/// `taskkill /T` is the closest thing — it reaches any children opencode
+/// spawned, which a bare handle kill would leave behind.
+async fn terminate(child: &mut Child) {
+    #[cfg(unix)]
+    if let Some(pid) = child.id() {
+        // SAFETY: `kill` with SIGTERM cannot invalidate anything; the only
+        // risk is signalling the wrong pid, which the `id()` lookup prevents.
+        unsafe {
+            libc::kill(pid as i32, libc::SIGTERM);
+        }
+    }
+
+    let deadline = Instant::now() + TERMINATE_GRACE;
+    loop {
+        match child.try_wait() {
+            Ok(Some(_)) => return,
+            Ok(None) if Instant::now() < deadline => {
+                tokio::time::sleep(Duration::from_millis(50)).await;
+            }
+            _ => break,
+        }
+    }
+
+    #[cfg(target_os = "windows")]
+    {
+        if let Some(pid) = child.id() {
+            let _ = Command::new("taskkill")
+                .args(["/PID", &pid.to_string(), "/T", "/F"])
+                .stdin(std::process::Stdio::null())
+                .stdout(std::process::Stdio::null())
+                .stderr(std::process::Stdio::null())
+                .status()
+                .await;
+        }
+    }
+
+    let _ = child.start_kill();
+    let _ = tokio::time::timeout(Duration::from_secs(2), child.wait()).await;
 }
 
 #[derive(Clone, Serialize)]
@@ -375,12 +394,27 @@ pub async fn server_status(manager: State<'_, Arc<ServerManager>>) -> Result<Ser
 }
 
 /// Called on app exit so we never orphan a server process.
+///
+/// This **blocks** rather than spawning. A fire-and-forget task races the
+/// runtime teardown: the event loop returns, the process exits, and the task
+/// that was going to kill the server is killed with it — leaving `opencode
+/// serve` holding a database lock that confuses the next launch. Waiting here
+/// costs at most the grace period, once, at exit.
 pub fn shutdown_on_exit(app: &AppHandle) {
-    let app = app.clone();
     let manager = app.state::<Arc<ServerManager>>().inner().clone();
-    tauri::async_runtime::spawn(async move {
-        manager.stop(&app).await;
-    });
+    let app = app.clone();
+
+    // `block_on` panics if called from inside an async context. The run
+    // callback is synchronous, but guard anyway rather than crash on exit.
+    if tokio::runtime::Handle::try_current().is_ok() {
+        tauri::async_runtime::spawn(async move {
+            manager.stop(&app).await;
+        });
+    } else {
+        tauri::async_runtime::block_on(async move {
+            manager.stop(&app).await;
+        });
+    }
 }
 
 #[cfg(test)]

@@ -31,7 +31,7 @@ export type TabId =
   | "lsp";
 
 const TABS: Array<{ id: TabId; label: string }> = [
-  { id: "appearance", label: "Appearance" },
+  { id: "appearance", label: "General" },
   { id: "providers", label: "Providers" },
   { id: "models", label: "Models" },
   { id: "agents", label: "Agents" },

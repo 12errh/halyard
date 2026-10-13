@@ -25,10 +25,16 @@ export interface Settings {
   recentProjects: string[];
   lastProject: string | null;
   binaryOverride: string | null;
+  showTray: boolean;
+  closeToTray: boolean;
+  notifyOnFinish: boolean;
 }
 
 export const EVENT_SERVER_STATUS = "halyard://server-status";
 export const EVENT_SERVER_LOG = "halyard://server-log";
+export const EVENT_OPEN = "halyard://open";
+/** Native menu bar clicks, forwarded from Rust. */
+export const EVENT_MENU = "__halyard_menu__";
 
 export interface ServerLogLine {
   level: "info" | "warn" | "stdout" | "stderr";
@@ -86,4 +92,15 @@ export function onServerStatus(
 
 export function onServerLog(handler: (line: ServerLogLine) => void): Promise<UnlistenFn> {
   return listen<ServerLogLine>(EVENT_SERVER_LOG, (event) => handler(event.payload));
+}
+
+/** Which tray menu item was used to summon the window. */
+export type OpenRequest = { action: "window" } | { action: "newThread" } | { action: "settings" };
+
+export function onOpenRequest(handler: (request: OpenRequest) => void): Promise<UnlistenFn> {
+  return listen<OpenRequest>(EVENT_OPEN, (event) => handler(event.payload));
+}
+
+export function onMenuAction(handler: (id: string) => void): Promise<UnlistenFn> {
+  return listen<string>(EVENT_MENU, (event) => handler(event.payload));
 }
