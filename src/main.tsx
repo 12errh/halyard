@@ -9,6 +9,7 @@ import "./index.css";
 // theme on every launch.
 initAppearance();
 
+
 const queryClient = new QueryClient({
   defaultOptions: {
     queries: {

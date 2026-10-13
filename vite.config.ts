@@ -5,9 +5,25 @@ import path from "node:path";
 import process from "node:process";
 const host = process.env.TAURI_DEV_HOST;
 
+/**
+ * Vite stamps `crossorigin` onto the emitted module script and stylesheet.
+ * On Tauri's custom protocol WebKitGTK treats that as a CORS request against a
+ * scheme that has no CORS headers, and the whole bundle silently fails to
+ * execute. Stripping it is the standard fix.
+ */
+function stripCrossOrigin() {
+  return {
+    name: "halyard-strip-crossorigin",
+    enforce: "post" as const,
+    transformIndexHtml(html: string) {
+      return html.replace(/\s+crossorigin(?=[=\s>])/g, "");
+    },
+  };
+}
+
 // https://vite.dev/config/
 export default defineConfig({
-  plugins: [react(), tailwindcss()],
+  plugins: [react(), tailwindcss(), stripCrossOrigin()],
 
   resolve: {
     alias: {

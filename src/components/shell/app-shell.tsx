@@ -62,13 +62,20 @@ export function AppShell() {
   }, [hydrate, attach]);
 
   // Start the server once we know whether a project was remembered.
+  //
+  // This must depend on the hydrated values, not just on `start`: `hydrate()`
+  // resolves asynchronously, so an effect keyed only on `start` runs once on
+  // mount (before settings arrive) and never again — leaving a remembered
+  // project with no server, forever.
+  const projectsLoaded = useProjects((s) => s.loaded);
+  const binaryOverride = useProjects((s) => s.binaryOverride);
   const bootstrapped = useRef(false);
+
   useEffect(() => {
-    const state = useProjects.getState();
-    if (bootstrapped.current || !state.loaded) return;
+    if (bootstrapped.current || !projectsLoaded) return;
     bootstrapped.current = true;
-    if (state.active) void start(state.active, state.binaryOverride);
-  }, [start]);
+    if (activeProject) void start(activeProject, binaryOverride);
+  }, [projectsLoaded, activeProject, binaryOverride, start]);
 
   // Bind the event stream to the live server.
   useEffect(() => {
