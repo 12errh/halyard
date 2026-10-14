@@ -19,6 +19,7 @@ import {
   PermissionsTab,
   ProvidersTab,
 } from "./settings-tabs";
+import { ResourcesTab } from "./resources-tab";
 
 export type TabId =
   | "appearance"
@@ -26,6 +27,7 @@ export type TabId =
   | "models"
   | "agents"
   | "mcp"
+  | "resources"
   | "permissions"
   | "config"
   | "lsp";
@@ -36,6 +38,7 @@ const TABS: Array<{ id: TabId; label: string }> = [
   { id: "models", label: "Models" },
   { id: "agents", label: "Agents" },
   { id: "mcp", label: "MCP" },
+  { id: "resources", label: "Skills" },
   { id: "permissions", label: "Permissions" },
   { id: "config", label: "Config" },
   { id: "lsp", label: "LSP & Formatters" },
@@ -186,6 +189,8 @@ function TabBody({ tab }: { tab: TabId }) {
       return <AgentsTab />;
     case "mcp":
       return <McpTab />;
+    case "resources":
+      return <ResourcesTab />;
     case "permissions":
       return <PermissionsTab />;
     case "config":

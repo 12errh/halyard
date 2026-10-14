@@ -17,6 +17,9 @@ export interface TimeParts {
   completed?: number;
 }
 
+/** The raw `/experimental/resource` payload: one record per resource file. */
+export type ClientResources = Record<string, Record<string, unknown>>;
+
 export interface TokenUsage {
   input: number;
   output: number;

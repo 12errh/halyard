@@ -19,15 +19,16 @@ import { EmptyState } from "./empty-state";
 import { Companion } from "@/components/chat/companion";
 import { TodoPanel } from "@/components/chat/todo-panel";
 import { SettingsDialog } from "./settings-dialog";
-import { OpencodeClient } from "@/lib/opencode/client";
 import { toFileParts } from "@/lib/attachments";
 import { normaliseDiff } from "@/lib/diff";
 import type { MessageEntry } from "@/lib/opencode/thread";
 import { useProjects } from "@/state/projects";
+import { useOpencodeClient } from "@/hooks/use-opencode-client";
 import { useDesktop } from "@/state/desktop";
 import { useTodos, todosFor } from "@/state/todos";
 import { useTranscript } from "@/state/transcript";
 import { useSessionOrg } from "@/state/session-org";
+import { useProjectInfo } from "@/state/project-info";
 import { announceFinish, useNativeShellActions, useSessionActivity } from "./desktop-bridge";
 import { setAttention } from "@/lib/desktop";
 import { useServer } from "@/state/server";
@@ -91,16 +92,14 @@ export function AppShell() {
   const ingestSystemEvent = useSystem((s) => s.ingest);
   const ingestQuestionEvent = useQuestions((s) => s.ingest);
   const ingestTodoEvent = useTodos((s) => s.ingest);
+  const ingestProjectEvent = useProjectInfo((s) => s.ingest);
   const syncQuestions = useQuestions((s) => s.sync);
   const resolveQuestion = useQuestions((s) => s.resolve);
   const questionsState = useQuestions((s) => s.bySession);
   const syncPermissions = usePermissions((s) => s.sync);
   const resolvePermission = usePermissions((s) => s.resolve);
 
-  const client = useMemo(
-    () => (phase.kind === "ready" ? new OpencodeClient(phase.info.url) : null),
-    [phase],
-  );
+  const client = useOpencodeClient();
 
   // --- Bootstrap -----------------------------------------------------------
   useEffect(() => {
@@ -125,6 +124,14 @@ export function AppShell() {
       cancelled = true;
     };
   }, [client, activeId, hydrateTodos]);
+
+  // Branch and file status belong to the project, not the session, so they
+  // are reloaded whenever the server is rebound to a different directory.
+  useEffect(() => {
+    if (phase.kind !== "ready" || !client) return;
+    void useProjectInfo.getState().load(client);
+    return () => useProjectInfo.getState().reset();
+  }, [phase.kind, client]);
 
   // The default model is scoped per project, so switching repos must reload it.
   useEffect(() => {
@@ -163,6 +170,7 @@ export function AppShell() {
       ingestSystemEvent(event);
       ingestQuestionEvent(event);
       ingestTodoEvent(event);
+      ingestProjectEvent(event);
     });
 
     // The per-session hydration cache is scoped to a project; a new server means

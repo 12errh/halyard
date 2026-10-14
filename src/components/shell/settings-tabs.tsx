@@ -17,7 +17,8 @@ import { save as saveDialog } from "@tauri-apps/plugin-dialog";
 import { openPath } from "@tauri-apps/plugin-opener";
 import { Button } from "@/components/ui/button";
 import { Input, Textarea } from "@/components/ui/input";
-import { Badge, SectionLabel, Switch } from "@/components/ui/primitives";
+import { Badge, Switch } from "@/components/ui/primitives";
+import { Empty, Group } from "./settings-groups";
 import { SkeletonBlock, SkeletonCard, SkeletonList, SkeletonRow } from "@/components/ui/skeleton";
 import { addCustomAgent, addCustomModel, removeCustomAgent } from "@/actions/config-write";
 import { formatContext } from "@/lib/opencode/models";
@@ -35,26 +36,6 @@ import { cn } from "@/lib/utils";
 // ---------------------------------------------------------------------------
 // Primitives
 // ---------------------------------------------------------------------------
-
-function Group({ label, hint, children }: { label: string; hint?: string; children: ReactNode }) {
-  return (
-    <section className="mb-6 last:mb-0">
-      <div className="mb-2 flex items-baseline gap-2">
-        <SectionLabel>{label}</SectionLabel>
-        {hint && <span className="text-[0.68rem] text-ink-ghost">{hint}</span>}
-      </div>
-      {children}
-    </section>
-  );
-}
-
-function Empty({ children }: { children: ReactNode }) {
-  return (
-    <p className="rounded-[var(--radius-card)] border border-dashed border-line bg-raised/30 px-3 py-5 text-center text-[0.8rem] text-ink-ghost">
-      {children}
-    </p>
-  );
-}
 
 function SearchInput({
   value,

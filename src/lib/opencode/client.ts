@@ -169,6 +169,21 @@ export class OpencodeClient {
    * always reflects the live state, so it is what the panel should read on
    * open rather than trying to replay the history.
    */
+  /** Which branch the project is on, and what its default is. */
+  vcs() {
+    return this.request<{ branch?: string; default_branch?: string }>("/vcs");
+  }
+
+  /** Files the agent has modified, with their status. */
+  fileStatus() {
+    return this.request<Array<Record<string, unknown>>>("/file/status");
+  }
+
+  /** Skill and MCP resources opencode can offer the agent. */
+  resources() {
+    return this.request<Record<string, Record<string, unknown>>>("/experimental/resource");
+  }
+
   todos(sessionID: string) {
     return this.request<unknown[]>(`/session/${sessionID}/todo`);
   }

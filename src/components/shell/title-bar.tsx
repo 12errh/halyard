@@ -1,4 +1,5 @@
-import { PanelLeft, PanelRight, Settings2, Sparkles } from "lucide-react";
+import { GitBranch, PanelLeft, PanelRight, Settings2, Sparkles } from "lucide-react";
+import { changedCount, onDefaultBranch, useProjectInfo } from "@/state/project-info";
 import { Button } from "@/components/ui/button";
 import { Pulse } from "@/components/ui/primitives";
 import { useServer } from "@/state/server";
@@ -51,6 +52,8 @@ export function TitleBar({
           </span>
         </>
       )}
+
+      <BranchIndicator />
 
       <div className="flex-1" />
 
@@ -110,5 +113,38 @@ function ServerIndicator() {
 function useServerProject() {
   return useServer((s) =>
     s.phase.kind === "ready" ? s.phase.info.project : null,
+  );
+}
+
+/**
+ * The branch the project is on, and how much the agent has changed on it.
+ *
+ * Worth the space in the header: "which branch am I about to hand a diff on"
+ * is the question that costs the most when the answer is wrong.
+ */
+function BranchIndicator() {
+  const branch = useProjectInfo((s) => s.branch);
+  const defaultBranch = useProjectInfo((s) => s.defaultBranch);
+  const fileStatus = useProjectInfo((s) => s.fileStatus);
+  if (!branch) return null;
+
+  const changed = changedCount(fileStatus);
+  const isDefault = onDefaultBranch({ branch, defaultBranch });
+
+  return (
+    <span
+      className="ml-1 flex items-center gap-1.5 rounded-full border border-line bg-raised/60 px-2 py-0.5"
+      title={isDefault ? `On ${branch}` : `On ${branch}, branched from ${defaultBranch}`}
+    >
+      <GitBranch size={10} className={isDefault ? "text-ink-ghost" : "text-accent"} />
+      <span className="max-w-[16ch] truncate font-mono text-[0.68rem] text-ink-faint">
+        {branch}
+      </span>
+      {changed > 0 && (
+        <span className="tabular shrink-0 rounded-full bg-accent/15 px-1 text-[0.62rem] text-accent">
+          {changed}
+        </span>
+      )}
+    </span>
   );
 }

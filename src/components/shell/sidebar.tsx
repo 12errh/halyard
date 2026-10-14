@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import { AnimatePresence, motion } from "motion/react";
 import {
   Check,
@@ -44,6 +44,9 @@ import { OpencodeClient } from "@/lib/opencode/client";
 import { Archive, Pin, Share2 } from "lucide-react";
 import { useThreads } from "@/state/threads";
 
+/** A stable identity for "nothing pinned here", so selectors stay referentially equal. */
+const EMPTY_IDS: string[] = [];
+
 export function Sidebar({ onOpenSettings }: { onOpenSettings(): void }) {
   const sessions = useSessions((s) => s.sessions);
   const query = useSessions((s) => s.query);
@@ -60,10 +63,18 @@ export function Sidebar({ onOpenSettings }: { onOpenSettings(): void }) {
   const busyId = useThreads((s) => s.busySessionId);
   const active = useProjects((s) => s.active);
   const [notice, setNotice] = useState<string | null>(null);
-  const org = useSessionOrg();
-  const pinnedIds = useSessionOrg((s) => (active ? s.pinned[active] ?? [] : []));
-  const archivedIds = useSessionOrg((s) => (active ? s.archived[active] ?? [] : []));
-  const unseenIds = useSessionOrg((s) => (active ? s.unseen[active] ?? [] : []));
+  // Select the whole map, then derive the per-project list.
+  //
+  // Selecting `(s.pinned[active] ?? [])` would build a fresh array on every
+  // read, and Zustand compares snapshots by identity — so the component would
+  // re-render forever. It bites hardest in the common case, where a project
+  // has no pins yet and the fallback `[]` is a new object each time.
+  const pinnedMap = useSessionOrg((s) => s.pinned);
+  const archivedMap = useSessionOrg((s) => s.archived);
+  const unseenMap = useSessionOrg((s) => s.unseen);
+  const pinnedIds = useMemo(() => (active ? pinnedMap[active] ?? EMPTY_IDS : EMPTY_IDS), [active, pinnedMap]);
+  const archivedIds = useMemo(() => (active ? archivedMap[active] ?? EMPTY_IDS : EMPTY_IDS), [active, archivedMap]);
+  const unseenIds = useMemo(() => (active ? unseenMap[active] ?? EMPTY_IDS : EMPTY_IDS), [active, unseenMap]);
   const isPinned = (id: string) => pinnedIds.includes(id);
   const isArchived = (id: string) => archivedIds.includes(id);
 
@@ -103,7 +114,11 @@ export function Sidebar({ onOpenSettings }: { onOpenSettings(): void }) {
   // Searching is an explicit request to see everything, archived included —
   // otherwise a search for a title you archived last month returns nothing and
   // looks like the session was lost.
-  const arranged = org.arrange(active ?? "", searched);
+  // Read through `getState` rather than a subscribed handle: `arrange` is a
+  // pure derivation from state this component already subscribes to, and
+  // subscribing to the whole store as well would re-render it on every
+  // unrelated change — including the ones this very render performs.
+  const arranged = useSessionOrg.getState().arrange(active ?? "", searched);
   const visible = query
     ? searched
     : [...arranged.pinned, ...arranged.recent, ...arranged.archived];
@@ -400,7 +415,7 @@ export function Sidebar({ onOpenSettings }: { onOpenSettings(): void }) {
                         label={isPinned(session.id) ? "Unpin" : "Pin to top"}
                         onClick={(event) => {
                           event.stopPropagation();
-                          if (active) org.togglePin(active, session.id);
+                          if (active) useSessionOrg.getState().togglePin(active, session.id);
                         }}
                       >
                         <Pin size={11} className={isPinned(session.id) ? "fill-current text-accent" : ""} />
@@ -409,7 +424,7 @@ export function Sidebar({ onOpenSettings }: { onOpenSettings(): void }) {
                         label={isArchived(session.id) ? "Unarchive" : "Archive"}
                         onClick={(event) => {
                           event.stopPropagation();
-                          if (active) org.toggleArchive(active, session.id);
+                          if (active) useSessionOrg.getState().toggleArchive(active, session.id);
                           if (isArchived(session.id) && activeId === session.id && nextRecent) openTab(nextRecent);
                         }}
                       >

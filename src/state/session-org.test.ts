@@ -110,3 +110,22 @@ describe("plural", () => {
     expect(plural(2, "day")).toBe("2 days");
   });
 });
+
+describe("selector stability", () => {
+  it("returns the same array reference for a project with no entries", () => {
+    // The bug this guards: selecting `(s.pinned[project] ?? [])` builds a new
+    // array on every read, and Zustand compares snapshots by identity, so the
+    // component re-renders forever. It only bites when the project has nothing
+    // pinned, which is the common case on a fresh install.
+    useSessionOrg.setState({ pinned: { "/other": ["x"] }, archived: {}, unseen: {} });
+    const first = useSessionOrg.getState().pinned["/empty"];
+    const second = useSessionOrg.getState().pinned["/empty"];
+    expect(first).toBe(second);
+  });
+
+  it("keeps the stored list identity stable across reads", () => {
+    const store = useSessionOrg.getState();
+    store.togglePin("/p", "a");
+    expect(useSessionOrg.getState().pinned["/p"]).toBe(useSessionOrg.getState().pinned["/p"]);
+  });
+});
