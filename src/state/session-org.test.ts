@@ -1,5 +1,6 @@
 import { beforeEach, describe, expect, it } from "vitest";
 import { useSessionOrg } from "@/state/session-org";
+import { relativeTime } from "@/components/shell/sidebar";
 import { plural } from "@/components/chat/tool-view";
 
 const PROJECT = "/repo";
@@ -127,5 +128,36 @@ describe("selector stability", () => {
     const store = useSessionOrg.getState();
     store.togglePin("/p", "a");
     expect(useSessionOrg.getState().pinned["/p"]).toBe(useSessionOrg.getState().pinned["/p"]);
+  });
+});
+
+describe("relative time", () => {
+  const ago = (ms: number) => Date.now() - ms;
+  const MIN = 60_000;
+  const HOUR = 60 * MIN;
+  const DAY = 24 * HOUR;
+
+  it("reads as 'now' for anything under a minute", () => {
+    expect(relativeTime(ago(5_000))).toBe("now");
+  });
+
+  it("counts minutes, then hours, then days", () => {
+    expect(relativeTime(ago(5 * MIN))).toBe("5m");
+    expect(relativeTime(ago(3 * HOUR))).toBe("3h");
+    expect(relativeTime(ago(2 * DAY))).toBe("2d");
+  });
+
+  it("falls back to a date once days stop meaning anything", () => {
+    // "43d" stops being information; a wrong impression of recency is worse
+    // than an honest date.
+    expect(relativeTime(ago(40 * DAY))).not.toMatch(/^\d+d$/);
+  });
+
+  it("says nothing rather than 'NaN' when there is no timestamp", () => {
+    expect(relativeTime(undefined)).toBe("");
+  });
+
+  it("does not go negative for a clock skew", () => {
+    expect(relativeTime(Date.now() + 60_000)).toBe("now");
   });
 });

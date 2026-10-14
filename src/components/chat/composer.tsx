@@ -1,8 +1,7 @@
-import { useCallback, useEffect, useLayoutEffect, useRef, useState } from "react";
-import { AlertTriangle, ArrowUp, Paperclip, Redo2, Shrink, Square, Undo2, X } from "lucide-react";
+import { useCallback, useEffect, useLayoutEffect, useRef, useState, type ReactNode } from "react";
+import { AlertTriangle, ArrowUp, MoreHorizontal, Paperclip, Redo2, Shrink, Square, Undo2, X } from "lucide-react";
 import { AnimatePresence, motion } from "motion/react";
 import { Button } from "@/components/ui/button";
-import { Kbd } from "@/components/ui/primitives";
 import {
   filesFromTransfer,
   formatSize,
@@ -411,48 +410,18 @@ export function Composer({
 
               {modelPicker}
 
-              {/* Turn-level controls. Disabled rather than hidden while idle so
-                  the toolbar does not reflow every time a turn starts. */}
-              <div className="ml-1 flex items-center gap-0.5">
-                <Button
-                  variant="ghost"
-                  size="icon-sm"
-                  disabled={!canUndo}
-                  onClick={onUndo}
-                  aria-label="Undo the last turn"
-                  title="Undo the last turn"
-                >
-                  <Undo2 size={13} />
-                </Button>
-                <Button
-                  variant="ghost"
-                  size="icon-sm"
-                  disabled={!canRedo}
-                  onClick={onRedo}
-                  aria-label="Redo"
-                  title="Redo"
-                >
-                  <Redo2 size={13} />
-                </Button>
-                <Button
-                  variant="ghost"
-                  size="icon-sm"
-                  disabled={!canCompact || busy}
-                  onClick={onCompact}
-                  aria-label="Compact the conversation"
-                  title="Summarise this conversation to free up context"
-                >
-                  <Shrink size={13} />
-                </Button>
-              </div>
-
-              <div className="hidden items-center gap-1.5 text-[0.68rem] text-ink-ghost sm:flex">
-                <Kbd>@</Kbd>
-                <span>files</span>
-                <span className="text-line-strong">·</span>
-                <Kbd>/</Kbd>
-                <span>commands</span>
-              </div>
+              {/* Undo, redo and compact behind one menu. Three unlabelled
+                  icons in a row is a puzzle; a single "…" with words behind it
+                  is something you can act on without guessing. */}
+              <TurnMenu
+                canUndo={canUndo}
+                canRedo={canRedo}
+                canCompact={canCompact}
+                busy={busy}
+                onUndo={onUndo}
+                onRedo={onRedo}
+                onCompact={onCompact}
+              />
             </div>
 
             {busy ? (
@@ -472,13 +441,6 @@ export function Composer({
             )}
           </div>
         </div>
-
-        <p className="mt-1.5 flex items-center justify-center gap-1 text-[0.68rem] text-ink-ghost">
-          <Kbd>shift</Kbd>
-          <span>+</span>
-          <Kbd>↵</Kbd>
-          <span>newline</span>
-        </p>
       </div>
     </div>
   );
@@ -506,3 +468,144 @@ export function matches(suggestion: Suggestion, query: string): boolean {
 }
 
 export { toFileParts };
+
+interface TurnMenuItem {
+  id: string;
+  label: string;
+  hint?: string;
+  icon: ReactNode;
+  disabled: boolean;
+  run(): void;
+}
+
+/**
+ * Turn-level actions, folded behind one button.
+ *
+ * Undo, redo and compact used to sit as three bare icons in the toolbar. None
+ * of them is used often, all three need explaining, and together they made the
+ * input look like a toolbar rather than somewhere you type.
+ */
+function TurnMenu({
+  canUndo,
+  canRedo,
+  canCompact,
+  busy,
+  onUndo,
+  onRedo,
+  onCompact,
+}: {
+  canUndo: boolean;
+  canRedo: boolean;
+  canCompact: boolean;
+  busy: boolean;
+  onUndo(): void;
+  onRedo(): void;
+  onCompact(): void;
+}) {
+  const [open, setOpen] = useState(false);
+  const ref = useRef<HTMLDivElement>(null);
+
+  useEffect(() => {
+    if (!open) return;
+    const onDown = (event: MouseEvent) => {
+      if (!ref.current?.contains(event.target as Node)) setOpen(false);
+    };
+    const onKey = (event: KeyboardEvent) => {
+      if (event.key === "Escape") setOpen(false);
+    };
+    document.addEventListener("mousedown", onDown);
+    document.addEventListener("keydown", onKey);
+    return () => {
+      document.removeEventListener("mousedown", onDown);
+      document.removeEventListener("keydown", onKey);
+    };
+  }, [open]);
+
+  const items: TurnMenuItem[] = [
+    {
+      id: "undo",
+      label: "Undo last turn",
+      hint: "Rewind to before it",
+      icon: <Undo2 size={12} />,
+      disabled: !canUndo,
+      run: onUndo,
+    },
+    {
+      id: "redo",
+      label: "Redo",
+      icon: <Redo2 size={12} />,
+      disabled: !canRedo,
+      run: onRedo,
+    },
+    {
+      id: "compact",
+      label: "Compact conversation",
+      hint: "Summarise to free context",
+      icon: <Shrink size={12} />,
+      disabled: !canCompact || busy,
+      run: onCompact,
+    },
+  ];
+
+  const available = items.some((item) => !item.disabled);
+
+  return (
+    <div ref={ref} className="relative ml-auto">
+      <button
+        type="button"
+        aria-label="Turn actions"
+        aria-haspopup="menu"
+        aria-expanded={open}
+        disabled={!available}
+        onClick={() => setOpen((v) => !v)}
+        className={cn(
+          "flex h-7 w-7 items-center justify-center rounded-[6px] transition-colors",
+          "text-ink-ghost hover:bg-raised hover:text-ink disabled:opacity-30",
+          open && "bg-raised text-ink",
+        )}
+      >
+        <MoreHorizontal size={14} />
+      </button>
+
+      <AnimatePresence>
+        {open && (
+          <motion.div
+            role="menu"
+            initial={{ opacity: 0, y: -3, scale: 0.98 }}
+            animate={{ opacity: 1, y: 0, scale: 1 }}
+            exit={{ opacity: 0, y: -3, scale: 0.98 }}
+            transition={{ duration: 0.12 }}
+            className="absolute bottom-full right-0 z-40 mb-1 w-[212px] overflow-hidden rounded-[7px] border border-line bg-overlay py-1 shadow-[var(--shadow-panel)]"
+          >
+            {items.map((item) => (
+              <button
+                key={item.id}
+                type="button"
+                role="menuitem"
+                disabled={item.disabled}
+                onClick={() => {
+                  setOpen(false);
+                  item.run();
+                }}
+                className={cn(
+                  "flex w-full items-center gap-2 px-2.5 py-1.5 text-left text-[0.78rem] transition-colors",
+                  item.disabled
+                    ? "cursor-not-allowed text-ink-ghost"
+                    : "text-ink-muted hover:bg-raised hover:text-ink",
+                )}
+              >
+                <span className="shrink-0">{item.icon}</span>
+                <span className="min-w-0 flex-1">
+                  {item.label}
+                  {item.hint && (
+                    <span className="block text-[0.66rem] text-ink-ghost">{item.hint}</span>
+                  )}
+                </span>
+              </button>
+            ))}
+          </motion.div>
+        )}
+      </AnimatePresence>
+    </div>
+  );
+}
