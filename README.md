@@ -77,46 +77,11 @@ something mounts the real shell.
 | `src/lib/opencode/` | The opencode client: HTTP, the SSE stream, and the pure thread reducer |
 | `src/state/` | Zustand stores, one per concern — sessions, threads, permissions, models, settings |
 | `src/components/` | The UI: `shell/` for the window, `chat/` for the conversation |
-| `tools/` | The mark and wordmark, defined once as geometry and rendered to every icon |
+| `tools/` | The mark and wordmark as geometry; `bash tools/icons.sh` regenerates every icon and lockup from them |
 
 The rule that shapes most of `src/lib/opencode/`: streaming correctness is
 derived as a pure function of `(state, event)` with no I/O and no React, so it
 can be tested exhaustively instead of watched.
-
-## The mark
-
-An isometric **H** drawn from sheared parallelograms — a line that becomes a
-letter, a symbol and a sense of direction. Each stroke splits along its centre
-into two facets meeting at a fold, so it reads as a folded ribbon rather than a
-flat letter, and still reads as an H when both facets collapse to one colour.
-
-The wordmark is custom geometric lettering, not a typeface — every horizontal
-band is cut so its top and bottom edges rise to the right at the mark's own
-angle, and no other angle is allowed anywhere in the word. The word itself stays
-flat and level so it holds together at the eleven pixels the title bar gives it.
-
-<p align="center">
-  <picture>
-    <source media="(prefers-color-scheme: dark)" srcset="docs/wordmark-on-dark.svg">
-    <img src="docs/wordmark-on-light.svg" alt="HALYARD" width="300">
-  </picture>
-</p>
-
-| | |
-|---|---|
-| ![app icon, dark](docs/app-icon-dark.svg) | ![app icon, light](docs/app-icon-light.svg) |
-
-| Colour | Hex | Role |
-|---|---|---|
-| Graphite | `#17191D` | Surface, and the mark in light mode |
-| Seafoam mint | `#83E1C1` | Accent |
-| Soft white | `#F4F4F0` | Ink, and the mark on graphite |
-
-Both are defined once as geometry — [`tools/logo.py`](tools/logo.py) for the
-symbol, [`tools/wordmark.py`](tools/wordmark.py) for the word — and everything
-else is generated from them: app icons, tray icon and the lockups. Run
-`bash tools/icons.sh` after changing either and commit the result under
-`src-tauri/icons`.
 
 ## Platforms
 
