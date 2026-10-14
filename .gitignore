@@ -29,3 +29,9 @@ src-tauri/gen/schemas
 
 # Test output
 coverage
+
+# TypeScript incremental build cache
+*.tsbuildinfo
+
+# Rust
+src-tauri/target
