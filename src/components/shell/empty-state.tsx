@@ -1,7 +1,7 @@
 import { FolderOpen, TriangleAlert } from "lucide-react";
 import { motion } from "motion/react";
 import type { ReactNode } from "react";
-import { Companion } from "@/components/chat/companion";
+import { AsciiMark } from "./ascii-mark";
 
 /**
  * Empty state.
@@ -14,16 +14,14 @@ export function EmptyState({
   body,
   action,
   tone = "neutral",
-  companion = false,
-  mood = "idle",
+  mark = false,
 }: {
   title: string;
   body?: ReactNode;
   action?: ReactNode;
   tone?: "neutral" | "danger";
-  /** Show the companion sprite in place of the generic icon. */
-  companion?: boolean;
-  mood?: "idle" | "working";
+  /** Show the Halyard mark in place of the generic icon. */
+  mark?: boolean;
 }) {
   const danger = tone === "danger";
 
@@ -34,8 +32,8 @@ export function EmptyState({
       transition={{ duration: 0.3, ease: [0.22, 1, 0.36, 1] }}
       className="flex max-w-md flex-col items-center gap-3 text-center"
     >
-      {companion && !danger ? (
-        <Companion size={124} mood={mood} className="-mb-1" />
+      {mark && !danger ? (
+        <AsciiMark className="-mb-1" />
       ) : (
         <span
           className={

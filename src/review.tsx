@@ -1,6 +1,10 @@
 /** Dev-only: render one component in isolation for review shots. */
 import { createRoot } from "react-dom/client";
 import { Sidebar } from "@/components/shell/sidebar";
+import { TitleBar } from "@/components/shell/title-bar";
+import { Logo } from "@/components/shell/logo";
+import { LogoLockup, Wordmark } from "@/components/shell/wordmark";
+import { AsciiMark } from "@/components/shell/ascii-mark";
 import { Composer } from "@/components/chat/composer";
 import { MessageThread } from "@/components/chat/message-thread";
 import { TodoPanel } from "@/components/chat/todo-panel";
@@ -107,6 +111,53 @@ createRoot(document.getElementById("root")!).render(
             plan={mode === "chat" ? <TodoPanel todos={PLAN} /> : undefined}
           />
         </div>
+      </div>
+    )}
+    {mode === "empty" && (
+      <div className="flex min-w-0 flex-1 flex-col">
+        <div className="min-h-0 flex-1">
+          <MessageThread entries={[]} live={false} agent="build" model="fast" />
+        </div>
+        <div>
+          <Composer
+            onSubmit={() => {}} onAbort={() => {}} busy={false}
+            suggestFiles={() => Promise.resolve([])}
+            suggestCommands={() => Promise.resolve([])}
+            canUndo={false} canRedo={false} canCompact={false}
+            onUndo={() => {}} onRedo={() => {}} onCompact={() => {}}
+          />
+        </div>
+      </div>
+    )}
+    {mode === "ascii" && (
+      <div className="flex flex-1 items-center justify-center bg-canvas">
+        <AsciiMark />
+      </div>
+    )}
+    {mode === "mark" && (
+      <div className="flex flex-1 items-center justify-center gap-10 bg-canvas">
+        <Logo className="h-16 w-16" />
+        <Logo className="h-8 w-8" />
+        <Logo className="h-5 w-5" />
+        <Logo className="h-[18px] w-[18px]" />
+        <AsciiMark />
+      </div>
+    )}
+    {mode === "title" && (
+      <div className="flex flex-1 flex-col bg-canvas">
+        <TitleBar
+          onToggleSidebar={() => {}} onToggleFileTree={() => {}}
+          fileTreeOpen={false} onOpenSettings={() => {}}
+        />
+      </div>
+    )}
+    {mode === "lockup" && (
+      <div className="flex flex-1 flex-col items-start gap-6 bg-canvas p-8 text-ink">
+        <LogoLockup className="h-14 w-auto" />
+        <LogoLockup className="h-8 w-auto" />
+        <LogoLockup className="h-[14px] w-auto" />
+        <LogoLockup className="h-[11px] w-auto" />
+        <Wordmark className="h-14 w-auto" />
       </div>
     )}
     {mode === "composer" && (

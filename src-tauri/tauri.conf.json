@@ -22,7 +22,7 @@
         "center": true,
         "decorations": true,
         "theme": "Dark",
-        "backgroundColor": "#141311"
+        "backgroundColor": "#0F1114"
       }
     ],
     "security": {
@@ -38,7 +38,7 @@
     },
     "trayIcon": {
       "id": "halyard-tray",
-      "iconPath": "icons/32x32.png",
+      "iconPath": "icons/tray.png",
       "iconAsTemplate": false,
       "tooltip": "Halyard",
       "menuOnLeftClick": false

@@ -1,4 +1,5 @@
-import { GitBranch, PanelLeft, PanelRight, Settings2, Sparkles } from "lucide-react";
+import { GitBranch, PanelLeft, PanelRight, Settings2 } from "lucide-react";
+import { LogoLockup } from "@/components/shell/wordmark";
 import { changedCount, onDefaultBranch, useProjectInfo } from "@/state/project-info";
 import { Button } from "@/components/ui/button";
 import { Pulse } from "@/components/ui/primitives";
@@ -39,10 +40,7 @@ export function TitleBar({
         <PanelLeft size={14} />
       </Button>
 
-      <div className="flex items-center gap-1.5">
-        <Sparkles size={12} className="text-accent" />
-        <span className="text-[0.8rem] font-medium tracking-tight text-ink">Halyard</span>
-      </div>
+      <LogoLockup className="h-[15px] w-auto shrink-0 text-ink" />
 
       {active && (
         <>

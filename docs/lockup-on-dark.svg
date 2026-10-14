@@ -1,0 +1,55 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="-6.00 -16.12 676.37 122.12" width="676" height="122">
+  <title>Halyard</title>
+  <g transform="translate(0 16.12) scale(0.9365)">
+  <title>Halyard</title>
+  <defs>
+    <linearGradient id="lit" x1="0" y1="0" x2="0.25" y2="1">
+      <stop offset="0" stop-color="#83E1C1"/>
+      <stop offset="0.55" stop-color="#63D2AE"/>
+      <stop offset="1" stop-color="#35A184"/>
+    </linearGradient>
+    <linearGradient id="shade" x1="0" y1="0" x2="0.55" y2="1">
+      <stop offset="0" stop-color="#2E8E74"/>
+      <stop offset="1" stop-color="#1F6350"/>
+    </linearGradient>
+    <linearGradient id="edge" x1="0" y1="0" x2="1" y2="0">
+      <stop offset="0" stop-color="#BDF3E0"/>
+      <stop offset="1" stop-color="#7BD9B8"/>
+    </linearGradient>
+  </defs>
+  <path d="M14.00 5.56 L28.04 -0.90 L28.04 83.10 L14.00 89.56Z" fill="url(#lit)"/>
+    <path d="M28.04 -0.90 L41.00 -6.86 L41.00 77.14 L28.04 83.10Z" fill="url(#shade)"/>
+    <path d="M14.00 5.56 L41.00 -6.86 L41.00 -4.66 L14.00 7.76Z" fill="url(#edge)"/>
+    <path d="M60.00 -15.60 L74.04 -22.05 L74.04 61.95 L60.00 68.40Z" fill="url(#lit)"/>
+    <path d="M74.04 -22.05 L87.00 -28.02 L87.00 55.98 L74.04 61.95Z" fill="url(#shade)"/>
+    <path d="M60.00 -15.60 L87.00 -28.02 L87.00 -25.82 L60.00 -13.40Z" fill="url(#edge)"/>
+    <path d="M14.00 36.56 L44.66 22.46 L44.66 44.46 L14.00 58.56Z" fill="url(#lit)"/>
+    <path d="M44.66 22.46 L87.00 2.98 L87.00 24.98 L44.66 44.46Z" fill="url(#shade)"/>
+    <path d="M14.00 36.56 L87.00 2.98 L87.00 5.18 L14.00 38.76Z" fill="url(#edge)"/>
+</g>
+  <g fill="#F4F4F0">
+  <path transform="translate(102.37 0)" d="M0.00 0.00 L0.00 100.00 L22.00 100.00 L22.00 0.00Z"/>
+  <path transform="translate(102.37 0)" d="M36.00 0.00 L36.00 100.00 L58.00 100.00 L58.00 0.00Z"/>
+  <path transform="translate(102.37 0)" d="M0.00 39.00 L0.00 61.00 L58.00 50.88 L58.00 28.88Z"/>
+  <path transform="translate(102.37 0)" d="M78.00 100.00 L100.00 100.00 L116.00 0.00 L106.00 0.00Z"/>
+  <path transform="translate(102.37 0)" d="M124.00 100.00 L146.00 100.00 L126.00 0.00 L116.00 0.00Z"/>
+  <path transform="translate(102.37 0)" d="M102.00 62.00 L102.00 84.00 L126.00 73.88 L126.00 51.88Z"/>
+  <path transform="translate(102.37 0)" d="M166.00 0.00 L166.00 100.00 L188.00 100.00 L188.00 0.00Z"/>
+  <path transform="translate(102.37 0)" d="M166.00 78.00 L166.00 100.00 L218.00 89.88 L218.00 67.88Z"/>
+  <path transform="translate(102.37 0)" d="M238.00 0.00 L260.00 0.00 L282.00 52.00 L260.00 52.00Z"/>
+  <path transform="translate(102.37 0)" d="M282.00 0.00 L304.00 0.00 L282.00 52.00 L260.00 52.00Z"/>
+  <path transform="translate(102.37 0)" d="M260.00 52.00 L260.00 100.00 L282.00 100.00 L282.00 52.00Z"/>
+  <path transform="translate(102.37 0)" d="M324.00 100.00 L346.00 100.00 L362.00 0.00 L352.00 0.00Z"/>
+  <path transform="translate(102.37 0)" d="M370.00 100.00 L392.00 100.00 L372.00 0.00 L362.00 0.00Z"/>
+  <path transform="translate(102.37 0)" d="M348.00 62.00 L348.00 84.00 L372.00 73.88 L372.00 51.88Z"/>
+  <path transform="translate(102.37 0)" d="M412.00 0.00 L412.00 100.00 L434.00 100.00 L434.00 0.00Z"/>
+  <path transform="translate(102.37 0)" d="M412.00 0.00 L412.00 22.00 L476.00 11.88 L476.00 -10.12Z"/>
+  <path transform="translate(102.37 0)" d="M454.00 0.00 L454.00 62.00 L476.00 62.00 L476.00 0.00Z"/>
+  <path transform="translate(102.37 0)" d="M412.00 40.00 L412.00 62.00 L476.00 51.88 L476.00 29.88Z"/>
+  <path transform="translate(102.37 0)" d="M452.00 100.00 L474.00 100.00 L456.00 62.00 L434.00 62.00Z"/>
+  <path transform="translate(102.37 0)" d="M496.00 0.00 L496.00 100.00 L518.00 100.00 L518.00 0.00Z"/>
+  <path transform="translate(102.37 0)" d="M496.00 0.00 L496.00 22.00 L562.00 11.88 L562.00 -10.12Z"/>
+  <path transform="translate(102.37 0)" d="M496.00 78.00 L496.00 100.00 L562.00 89.88 L562.00 67.88Z"/>
+  <path transform="translate(102.37 0)" d="M540.00 0.00 L540.00 100.00 L562.00 100.00 L562.00 0.00Z"/>
+  </g>
+</svg>

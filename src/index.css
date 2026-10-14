@@ -61,36 +61,38 @@
 }
 
 :root {
-  /* Neutral ramp — warm, not blue-black */
-  --canvas: #141311;
-  --surface: #1a1917;
-  --raised: #211f1c;
-  --overlay: #272420;
-  --line: #2c2926;
-  --line-strong: #3b3733;
+  /* Neutral ramp — graphite, the brand's ground.
+     Each step is lifted slightly toward mint so the greys read as the same
+     family as the accent rather than as a dead neutral. */
+  --canvas: #0f1114;
+  --surface: #17191d;
+  --raised: #1e2126;
+  --overlay: #24282e;
+  --line: #2b2f36;
+  --line-strong: #3c414a;
 
-  --ink: #edeae4;
-  --ink-muted: #a8a29a;
-  --ink-faint: #77716a;
-  --ink-ghost: #56514b;
+  --ink: #f4f4f0;
+  --ink-muted: #a9aeb6;
+  --ink-faint: #767c85;
+  --ink-ghost: #565c65;
 
-  /* Accent — desaturated clay, echoes the warm ramp without neon */
-  --accent: #c87d5f;
-  --accent-hover: #d69076;
-  --accent-quiet: #3a2a23;
-  --accent-ink: #1b1310;
+  /* Accent — seafoam mint. Low saturation, never neon. */
+  --accent: #83e1c1;
+  --accent-hover: #9ceacf;
+  --accent-quiet: #1b3a33;
+  --accent-ink: #0d1a16;
 
   /* Semantics */
-  --live: #6e8fd8;
-  --good: #7ba05f;
-  --warn: #c2a054;
-  --danger: #c45b52;
+  --live: #6fa8dc;
+  --good: #83e1c1;
+  --warn: #d8b45c;
+  --danger: #e0716a;
 
   /* Diff */
-  --diff-add: #2f3f2c;
-  --diff-add-line: #3f5a3a;
-  --diff-del: #42292a;
-  --diff-del-line: #6b3a3a;
+  --diff-add: #16302a;
+  --diff-add-line: #2f6b57;
+  --diff-del: #3a2022;
+  --diff-del-line: #7a3b40;
 
   --shadow-panel: 0 18px 48px -12px rgb(0 0 0 / 0.6);
   --ring: color-mix(in oklab, var(--accent) 55%, transparent);
@@ -105,32 +107,34 @@
 }
 
 [data-theme="light"] {
-  --canvas: #faf9f7;
+  /* Graphite inverted: the ground drops out and the ink takes the brand's
+     dark, so the mark and the accent keep their identity either way. */
+  --canvas: #f4f4f0;
   --surface: #ffffff;
-  --raised: #f4f2ee;
+  --raised: #f7f7f3;
   --overlay: #ffffff;
-  --line: #e6e2dc;
-  --line-strong: #d2ccc4;
+  --line: #e2e3de;
+  --line-strong: #c9cbc4;
 
-  --ink: #1c1a17;
-  --ink-muted: #5c564e;
-  --ink-faint: #857e75;
-  --ink-ghost: #a8a099;
+  --ink: #17191d;
+  --ink-muted: #5b616a;
+  --ink-faint: #878d96;
+  --ink-ghost: #aab0b8;
 
-  --accent: #b3603f;
-  --accent-hover: #a2543a;
-  --accent-quiet: #f6ebe5;
-  --accent-ink: #fffaf7;
+  --accent: #2f9c7c;
+  --accent-hover: #26866a;
+  --accent-quiet: #dcf1e9;
+  --accent-ink: #ffffff;
 
-  --live: #4a6bb5;
-  --good: #4f7a3a;
-  --warn: #97741f;
-  --danger: #a83f36;
+  --live: #3f6ea8;
+  --good: #3f8a63;
+  --warn: #8a6a1c;
+  --danger: #b34038;
 
-  --diff-add: #e7f2e3;
-  --diff-add-line: #b8d8b0;
-  --diff-del: #fbe9e7;
-  --diff-del-line: #eeb8b2;
+  --diff-add: #e2f2ea;
+  --diff-add-line: #a8d8c2;
+  --diff-del: #fae8e7;
+  --diff-del-line: #eeb4ae;
 
   --shadow-panel: 0 18px 48px -14px rgb(40 33 24 / 0.18);
   color-scheme: light;

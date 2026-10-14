@@ -16,7 +16,7 @@ import { Sidebar } from "@/components/shell/sidebar";
 import { TitleBar } from "@/components/shell/title-bar";
 import { FileTree } from "@/components/shell/file-tree";
 import { EmptyState } from "./empty-state";
-import { Companion } from "@/components/chat/companion";
+import { AsciiMark } from "@/components/shell/ascii-mark";
 import { TodoPanel } from "@/components/chat/todo-panel";
 import { SettingsDialog } from "./settings-dialog";
 import { toFileParts } from "@/lib/attachments";
@@ -683,7 +683,7 @@ function Booting({ project, onPickFolder }: { project: string | null; onPickFold
     return (
       <div className="flex flex-1 items-center justify-center px-8">
         <EmptyState
-          companion
+          mark
           title="Open a folder to begin"
           body="Halyard runs opencode against a project directory. Pick one and it will start a server scoped to that folder."
           action={
@@ -701,7 +701,7 @@ function Booting({ project, onPickFolder }: { project: string | null; onPickFold
   // this reads as progress rather than a stalled screen.
   return (
     <div className="flex flex-1 flex-col items-center justify-center gap-3 text-ink-faint">
-      <Companion size={104} mood="working" />
+      <AsciiMark />
       <p className="font-mono text-[0.84rem]">Starting opencode in {project}</p>
     </div>
   );

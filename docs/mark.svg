@@ -1,0 +1,27 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="8.00 -34.02 85.00 129.58" preserveAspectRatio="xMidYMid meet">
+  <title>Halyard</title>
+  <defs>
+    <linearGradient id="lit" x1="0" y1="0" x2="0.25" y2="1">
+      <stop offset="0" stop-color="#83E1C1"/>
+      <stop offset="0.55" stop-color="#63D2AE"/>
+      <stop offset="1" stop-color="#35A184"/>
+    </linearGradient>
+    <linearGradient id="shade" x1="0" y1="0" x2="0.55" y2="1">
+      <stop offset="0" stop-color="#2E8E74"/>
+      <stop offset="1" stop-color="#1F6350"/>
+    </linearGradient>
+    <linearGradient id="edge" x1="0" y1="0" x2="1" y2="0">
+      <stop offset="0" stop-color="#BDF3E0"/>
+      <stop offset="1" stop-color="#7BD9B8"/>
+    </linearGradient>
+  </defs>
+  <path d="M14.00 5.56 L28.04 -0.90 L28.04 83.10 L14.00 89.56Z" fill="url(#lit)"/>
+    <path d="M28.04 -0.90 L41.00 -6.86 L41.00 77.14 L28.04 83.10Z" fill="url(#shade)"/>
+    <path d="M14.00 5.56 L41.00 -6.86 L41.00 -4.66 L14.00 7.76Z" fill="url(#edge)"/>
+    <path d="M60.00 -15.60 L74.04 -22.05 L74.04 61.95 L60.00 68.40Z" fill="url(#lit)"/>
+    <path d="M74.04 -22.05 L87.00 -28.02 L87.00 55.98 L74.04 61.95Z" fill="url(#shade)"/>
+    <path d="M60.00 -15.60 L87.00 -28.02 L87.00 -25.82 L60.00 -13.40Z" fill="url(#edge)"/>
+    <path d="M14.00 36.56 L44.66 22.46 L44.66 44.46 L14.00 58.56Z" fill="url(#lit)"/>
+    <path d="M44.66 22.46 L87.00 2.98 L87.00 24.98 L44.66 44.46Z" fill="url(#shade)"/>
+    <path d="M14.00 36.56 L87.00 2.98 L87.00 5.18 L14.00 38.76Z" fill="url(#edge)"/>
+</svg>

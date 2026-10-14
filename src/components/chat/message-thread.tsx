@@ -1,5 +1,5 @@
 import { memo, useLayoutEffect, useMemo, useRef, useState } from "react";
-import { Companion } from "./companion";
+import { AsciiMark } from "@/components/shell/ascii-mark";
 import { AnimatePresence, motion } from "motion/react";
 import { ArrowDown, Paperclip, Sparkles } from "lucide-react";
 import { useAutoScroll } from "@/hooks/use-auto-scroll";
@@ -123,7 +123,7 @@ export function MessageThread({
             so it sits optically in the middle without fighting the composer. */}
         {!live && entries.length === 0 && (
           <div className="flex min-h-[52vh] flex-col items-center justify-center gap-3 py-10 text-center">
-            <Companion size={116} />
+            <AsciiMark />
             <div className="space-y-1">
               <h2 className="text-[1.05rem] font-medium tracking-tight text-ink">
                 {title ?? "What are we working on?"}
