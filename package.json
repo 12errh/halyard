@@ -13,6 +13,8 @@
     "coverage": "vitest run --coverage",
     "typecheck": "tsc -p tsconfig.json --noEmit && tsc -p tsconfig.node.json --noEmit",
     "test:rust": "cargo test --manifest-path src-tauri/Cargo.toml",
+    "smoke": "vitest run src/components/shell/app-shell.test.tsx src/test/store-selectors.test.ts",
+    "verify": "pnpm typecheck && pnpm vitest run && pnpm test:rust && vite build",
     "lint": "pnpm typecheck"
   },
   "dependencies": {
@@ -79,5 +81,24 @@
     "vite-plugin-tauri": "^4.0.0",
     "vitest": "^5.0.4"
   },
-  "description": "A native desktop shell for the opencode coding agent"
+  "description": "A native desktop shell for the opencode coding agent",
+  "license": "MIT",
+  "author": "12errh",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/12errh/halyard.git"
+  },
+  "bugs": {
+    "url": "https://github.com/12errh/halyard/issues"
+  },
+  "homepage": "https://github.com/12errh/halyard#readme",
+  "keywords": [
+    "opencode",
+    "tauri",
+    "desktop",
+    "coding-agent",
+    "ai",
+    "rust",
+    "react"
+  ]
 }
