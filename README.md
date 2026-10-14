@@ -12,6 +12,7 @@
 Chat, session tabs, subagents, diffs and settings — with opencode's own server
 started, watched and stopped for you.
 
+[![CI](https://img.shields.io/github/actions/workflow/status/12errh/halyard/ci.yml?branch=main&style=flat-square&labelColor=17191D&label=CI)](https://github.com/12errh/halyard/actions/workflows/ci.yml)
 [![License: MIT](https://img.shields.io/badge/license-MIT-83E1C1?style=flat-square&labelColor=17191D&logoColor=17191D)](LICENSE)
 [![Platforms](https://img.shields.io/badge/platform-Linux%20%7C%20Windows-83E1C1?style=flat-square&labelColor=17191D)](https://tauri.app)
 [![Tauri](https://img.shields.io/badge/tauri-2-fc6259?style=flat-square&labelColor=17191D&logo=tauri&logoColor=fc6259)](https://tauri.app)
