@@ -2,6 +2,8 @@ import { useCallback, useEffect, useLayoutEffect, useRef, useState, type ReactNo
 import { AlertTriangle, ArrowUp, MoreHorizontal, Paperclip, Redo2, Shrink, Square, Undo2, X } from "lucide-react";
 import { AnimatePresence, motion } from "motion/react";
 import { Button } from "@/components/ui/button";
+import { SkillPicker } from "@/components/chat/skill-picker";
+import type { Skill } from "@/lib/resources";
 import {
   filesFromTransfer,
   formatSize,
@@ -36,8 +38,9 @@ export function Composer({
   busy,
   disabled,
   placeholder = "Ask opencode to do something…",
-  suggestFiles,
+  suggestMentions,
   suggestCommands,
+  listSkills,
   modelPicker,
   plan,
   canUndo,
@@ -52,8 +55,11 @@ export function Composer({
   busy: boolean;
   disabled?: boolean;
   placeholder?: string;
-  suggestFiles(query: string): Promise<string[]>;
+  /** Cached by the caller; this never fires a request per keystroke. */
+  suggestMentions(query: string): Promise<Suggestion[]>;
   suggestCommands(): Promise<Suggestion[]>;
+  /** Supplies the skill list to the picker; it arrives ready to search. */
+  listSkills(): { skills: Skill[]; loading: boolean; error: string | null };
   /** Rendered in the composer's toolbar, left of the send affordance. */
   modelPicker?: React.ReactNode;
   /** Rendered above the input — the agent's live plan. */
@@ -72,6 +78,8 @@ export function Composer({
   const [attachments, setAttachments] = useState<Attachment[]>([]);
   const [rejections, setRejections] = useState<Rejection[]>([]);
   const [dragging, setDragging] = useState(false);
+  const [picker, setPicker] = useState(false);
+  const catalogue = listSkills();
   const textarea = useRef<HTMLTextAreaElement>(null);
   const fileInput = useRef<HTMLInputElement>(null);
 
@@ -121,12 +129,7 @@ export function Composer({
     const run = async () => {
       const found =
         trigger.sigil === "@"
-          ? (await suggestFiles(trigger.query)).map((path) => ({
-              value: path,
-              label: path.split("/").pop() ?? path,
-              hint: path,
-              kind: "file" as const,
-            }))
+          ? await suggestMentions(trigger.query)
           : (await suggestCommands()).filter((c) => matches(c, trigger.query));
       if (!cancelled) {
         // No cap: a truncated command list reads as "the app only has three
@@ -139,7 +142,9 @@ export function Composer({
     return () => {
       cancelled = true;
     };
-  }, [trigger?.sigil, trigger?.query]);
+    // The list is filtered locally by the caller, so this only re-runs on a
+    // change of sigil or when the cached list itself changes.
+  }, [trigger?.sigil, trigger?.query, suggestMentions, suggestCommands]);
 
   // Grow with content up to a ceiling, then scroll.
   useLayoutEffect(() => {
@@ -152,6 +157,13 @@ export function Composer({
   const applySuggestion = useCallback(
     (suggestion: Suggestion) => {
       if (!trigger) return;
+      // `/skill` is a door, not a word: it opens the list rather than being
+      // typed into the prompt.
+      if (suggestion.opens === "skills") {
+        setItems([]);
+        setPicker(true);
+        return;
+      }
       const token = trigger.sigil === "@" ? `@${suggestion.value}` : `/${suggestion.label}`;
       const next = `${value.slice(0, trigger.start)}${token} ${value.slice(caret)}`;
       setValue(next);
@@ -166,6 +178,23 @@ export function Composer({
       });
     },
     [trigger, value, caret],
+  );
+
+  /** Put the chosen skills in the prompt as the commands that invoke them. */
+  const addSkills = useCallback(
+    (names: string[]) => {
+      const commands = names.map((name) => `/${name}`).join(" ");
+      setValue((prev) => (prev.trim() ? `${prev.trim()} ${commands}` : commands));
+      requestAnimationFrame(() => {
+        const node = textarea.current;
+        if (!node) return;
+        node.focus();
+        const end = node.value.length;
+        node.setSelectionRange(end, end);
+        setCaret(end);
+      });
+    },
+    [],
   );
 
   const submit = useCallback(() => {
@@ -210,6 +239,14 @@ export function Composer({
 
   return (
     <div className="px-5 pb-4">
+      <SkillPicker
+        open={picker}
+        skills={catalogue.skills}
+        loading={catalogue.loading}
+        error={catalogue.error}
+        onClose={() => setPicker(false)}
+        onAdd={addSkills}
+      />
       <div className="mx-auto w-full max-w-[760px]">
         {/* The plan sits above the box rather than inside it: it is context,
             not input, and the composer should not look crowded when it
@@ -257,14 +294,19 @@ export function Composer({
                 {items.map((item, index) => {
                   const previous = items[index - 1];
                   const showHeading =
-                    item.kind === "command" &&
-                    (!previous || previous.kind !== "command" || previous.source !== item.source);
+                    !previous ||
+                    previous.kind !== item.kind ||
+                    (item.kind === "command" && previous.source !== item.source);
 
                   return (
                     <li key={`${item.kind}-${item.value ?? item.label}`}>
                       {showHeading && (
                         <p className="px-2.5 pb-0.5 pt-1.5 text-[0.6rem] font-semibold uppercase tracking-[0.13em] text-ink-ghost">
-                          {item.source === "skill" ? "Skills" : "Commands"}
+                          {item.kind === "agent"
+                          ? "Agents"
+                          : item.source === "skill"
+                            ? "Skills"
+                            : "Commands"}
                         </p>
                       )}
                       <button
@@ -450,9 +492,11 @@ export interface Suggestion {
   value: string;
   label: string;
   hint?: string;
-  kind: "file" | "command";
+  kind: "file" | "command" | "agent";
   /** `command` vs `skill`; used to group the list under headings. */
   source?: string;
+  /** An entry that opens something instead of being inserted, e.g. `/skill`. */
+  opens?: "skills";
 }
 
 /**

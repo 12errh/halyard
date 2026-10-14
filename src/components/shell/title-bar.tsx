@@ -29,7 +29,7 @@ export function TitleBar({
   return (
     <header
       data-tauri-drag-region
-      className="flex h-10 shrink-0 items-center gap-2 border-b border-line bg-canvas px-2.5"
+      className="flex h-10 shrink-0 items-center gap-2 bg-raised px-2.5"
     >
       <Button
         variant="ghost"

@@ -72,8 +72,10 @@ vi.mock("@/lib/tauri", () => ({
   },
   onServerStatus: vi.fn().mockResolvedValue(vi.fn()),
   onServerLog: vi.fn().mockResolvedValue(vi.fn()),
+  onOpenRequest: vi.fn().mockResolvedValue(vi.fn()),
   EVENT_SERVER_STATUS: "halyard://server-status",
   EVENT_SERVER_LOG: "halyard://server-log",
+  EVENT_OPEN: "halyard://open",
 }));
 
 vi.mock("@tauri-apps/plugin-dialog", () => ({

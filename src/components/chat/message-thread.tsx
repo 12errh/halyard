@@ -1,7 +1,7 @@
 import { memo, useLayoutEffect, useMemo, useRef, useState } from "react";
-import { AsciiMark } from "@/components/shell/ascii-mark";
+import { Logo } from "@/components/shell/logo";
 import { AnimatePresence, motion } from "motion/react";
-import { ArrowDown, Paperclip, Sparkles } from "lucide-react";
+import { ArrowDown, Paperclip, Shrink, Sparkles } from "lucide-react";
 import { useAutoScroll } from "@/hooks/use-auto-scroll";
 import { PartView } from "./part-view";
 import { DiffSummary } from "./diff-view";
@@ -123,7 +123,7 @@ export function MessageThread({
             so it sits optically in the middle without fighting the composer. */}
         {!live && entries.length === 0 && (
           <div className="flex min-h-[52vh] flex-col items-center justify-center gap-3 py-10 text-center">
-            <AsciiMark />
+            <Logo className="h-14 w-14" />
             <div className="space-y-1">
               <h2 className="text-[1.05rem] font-medium tracking-tight text-ink">
                 {title ?? "What are we working on?"}
@@ -178,6 +178,10 @@ const Turn = memo(function Turn({
   if (!info) return null;
 
   const assistant = info.role === "assistant";
+  // A summarised thread keeps a marker turn with no content of its own. Rendered
+  // as an ordinary message it is an empty bubble, which is what "compact just
+  // sent an empty message" actually was.
+  const summary = assistant && info.summary === true;
   const showTimestamps = useTranscript((s) => s.showTimestamps);
   const createdAt = info.time?.created;
   const text = userText(parts);
@@ -198,7 +202,16 @@ const Turn = memo(function Turn({
         assistant ? "" : "flex justify-end",
       )}
     >
-      {assistant ? (
+      {summary ? (
+        <div className="flex items-center gap-3 py-1 text-[0.7rem] text-ink-ghost">
+          <span className="h-px flex-1 bg-line" />
+          <span className="flex shrink-0 items-center gap-1.5">
+            <Shrink size={11} />
+            Conversation summarised
+          </span>
+          <span className="h-px flex-1 bg-line" />
+        </div>
+      ) : assistant ? (
         // Assistant: full-width prose on the left. A bubble would fight the
         // markdown and code blocks, which need the room.
         <div className="flex gap-3">

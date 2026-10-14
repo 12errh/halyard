@@ -1,7 +1,6 @@
 import { describe, expect, it } from "vitest";
 import { render } from "@testing-library/react";
 import { Logo, MARK_DRAWN, MARK_VIEW } from "@/components/shell/logo";
-import { AsciiMark, HALYARD_ASCII } from "@/components/shell/ascii-mark";
 import { LogoLockup, Wordmark, layoutWordmark } from "@/components/shell/wordmark";
 
 /** A viewBox as four numbers, so a malformed one fails the test not the types. */
@@ -142,26 +141,4 @@ describe("LogoLockup", () => {
   });
 });
 
-describe("AsciiMark", () => {
-  it("renders the mark as text", () => {
-    const { container } = render(<AsciiMark />);
-    expect(container.textContent).toContain("█");
-  });
-
-  it("is hidden from assistive tech — the name is already on screen", () => {
-    const { container } = render(<AsciiMark />);
-    expect(container.querySelector("pre")).toHaveAttribute("aria-hidden", "true");
-  });
-
-  it("keeps every row inside the widest row, so the block cannot drift", () => {
-    const rows = HALYARD_ASCII;
-    expect(rows.length).toBeGreaterThan(4);
-    const widest = Math.max(...rows.map((r) => r.length));
-    expect(widest).toBeGreaterThan(30);
-    for (const row of rows) {
-      expect(row.length).toBeLessThanOrEqual(widest);
-      expect(row.trimEnd()).toBe(row.trimEnd().replace(/\s+$/, ""));
-    }
-  });
-});
 

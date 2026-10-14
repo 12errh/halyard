@@ -10,7 +10,8 @@ function setup(overrides: Partial<Parameters<typeof Composer>[0]> = {}) {
     onSubmit,
     onAbort,
     busy: false,
-    suggestFiles: vi.fn().mockResolvedValue([] as string[]),
+    suggestMentions: vi.fn().mockResolvedValue([]),
+    listSkills: vi.fn().mockReturnValue({ skills: [], loading: false, error: null }),
     suggestCommands: vi.fn().mockResolvedValue([] as never[]),
     // Turn controls are opt-in from the caller's point of view; defaulting
     // them here keeps these tests about composing, not about the toolbar.
@@ -122,19 +123,38 @@ describe("Composer", () => {
 
   it("offers file suggestions after @", async () => {
     const user = userEvent.setup();
-    const suggestFiles = vi.fn().mockResolvedValue(["src/lib/thread.ts", "src/main.tsx"]);
-    const { box } = setup({ suggestFiles });
+    const suggestMentions = vi.fn().mockResolvedValue([
+      { value: "src/lib/thread.ts", label: "thread.ts", hint: "src/lib/thread.ts", kind: "file" },
+    ]);
+    const { box } = setup({ suggestMentions });
 
     await user.type(box, "look at @thr");
 
     await waitFor(() => expect(screen.getByText("thread.ts")).toBeInTheDocument());
-    expect(suggestFiles).toHaveBeenCalledWith("thr");
+    expect(suggestMentions).toHaveBeenCalledWith("thr");
+  });
+
+  it("offers agents alongside files after @", async () => {
+    const user = userEvent.setup();
+    const { box } = setup({
+      suggestMentions: vi.fn().mockResolvedValue([
+        { value: "build", label: "build", hint: "Writes code", kind: "agent" },
+        { value: "src/main.tsx", label: "main.tsx", hint: "src/main.tsx", kind: "file" },
+      ]),
+    });
+
+    await user.type(box, "@b");
+    await waitFor(() => expect(screen.getByText("Agents")).toBeInTheDocument());
+    expect(screen.getByText("build")).toBeInTheDocument();
+    expect(screen.getByText("main.tsx")).toBeInTheDocument();
   });
 
   it("inserts the full path when a file suggestion is chosen", async () => {
     const user = userEvent.setup();
     const { box } = setup({
-      suggestFiles: vi.fn().mockResolvedValue(["src/lib/thread.ts"]),
+      suggestMentions: vi.fn().mockResolvedValue([
+        { value: "src/lib/thread.ts", label: "thread.ts", hint: "src/lib/thread.ts", kind: "file" },
+      ]),
     });
 
     await user.type(box, "@thr");
@@ -147,10 +167,12 @@ describe("Composer", () => {
 
   it("does not suggest on a bare @ mid-word", async () => {
     const user = userEvent.setup();
-    const suggestFiles = vi.fn().mockResolvedValue(["a.ts"]);
-    const { box } = setup({ suggestFiles });
+    const suggestMentions = vi.fn().mockResolvedValue([
+      { value: "a.ts", label: "a.ts", hint: "a.ts", kind: "file" },
+    ]);
+    const { box } = setup({ suggestMentions });
     await user.type(box, "email@");
-    expect(suggestFiles).not.toHaveBeenCalled();
+    expect(suggestMentions).not.toHaveBeenCalled();
   });
 
   it("lists slash commands", async () => {
@@ -168,7 +190,11 @@ describe("Composer", () => {
 
   it("closes the suggestion list on Escape", async () => {
     const user = userEvent.setup();
-    const { box } = setup({ suggestFiles: vi.fn().mockResolvedValue(["a.ts"]) });
+    const { box } = setup({
+      suggestMentions: vi.fn().mockResolvedValue([
+        { value: "a.ts", label: "a.ts", hint: "a.ts", kind: "file" },
+      ]),
+    });
 
     await user.type(box, "@a");
     await waitFor(() => expect(screen.getByText("a.ts")).toBeInTheDocument());

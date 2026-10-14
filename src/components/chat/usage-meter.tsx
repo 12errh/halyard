@@ -1,13 +1,14 @@
 import { useMemo, useState } from "react";
 import { AnimatePresence, motion } from "motion/react";
-import { ChevronUp, Coins, Cpu } from "lucide-react";
+import { ChevronUp, Cpu } from "lucide-react";
 import {
   aggregateUsage,
+  billedTokens,
+  contextUsage,
   formatCost,
   formatTokens,
   sessionUsage,
   usageBreakdown,
-  type UsageTotals,
 } from "@/lib/usage";
 import type { Session } from "@/lib/opencode/types";
 import { cn } from "@/lib/utils";
@@ -17,22 +18,35 @@ import { cn } from "@/lib/utils";
  *
  * Sits above the composer rather than in settings, because "what did that run
  * cost me" is a question you have while looking at the run, not later.
+ *
+ * With a thread open the headline is its context — the size of the prompt the
+ * last answer came from — because that is the budget you can still spend. It
+ * is emphatically not the thread's lifetime token total: opencode counts every
+ * cache read in full, so that figure grows into the hundreds of millions over
+ * a long session while the model never sees more than one window's worth.
  */
 export function UsageMeter({
   sessions,
   activeSession,
+  messages,
 }: {
   sessions: Session[];
   activeSession: Session | undefined;
+  /** The active thread's messages, in order, for the context figure. */
+  messages: import("@/lib/opencode/types").MessageInfo[] | undefined;
 }) {
   const [open, setOpen] = useState(false);
 
-  const scope = useMemo<UsageTotals>(
-    () => (activeSession ? sessionUsage(activeSession) : aggregateUsage(sessions)),
-    [activeSession, sessions],
-  );
+  const context = useMemo(() => contextUsage(messages), [messages]);
+  const session = useMemo(() => (activeSession ? sessionUsage(activeSession) : null), [activeSession]);
+  const project = useMemo(() => aggregateUsage(sessions), [sessions]);
 
-  if (scope.total === 0 && scope.cost === 0) return null;
+  const headline = context
+    ? { tokens: context.total, label: "context", cost: session?.cost ?? 0, scope: "this thread" }
+    : { tokens: billedTokens(project), label: "tokens", cost: project.cost, scope: "this project" };
+
+  if (headline.tokens === 0 && headline.cost === 0) return null;
+  const breakdown = context ?? project;
 
   return (
     <div className="px-5 pb-1">
@@ -54,15 +68,13 @@ export function UsageMeter({
           >
             <Cpu size={11} className="shrink-0 text-ink-faint" />
             <span className="tabular font-mono text-[0.7rem] text-ink-faint">
-              {formatTokens(scope.total)} tokens
+              {formatTokens(headline.tokens)} {headline.label}
             </span>
             <span className="text-ink-ghost">·</span>
             <span className="tabular font-mono text-[0.7rem] text-ink-faint">
-              {formatCost(scope.cost)}
+              {formatCost(headline.cost)}
             </span>
-            <span className="ml-auto shrink-0 text-[0.66rem] text-ink-ghost/70">
-              {activeSession ? "this session" : "this project"}
-            </span>
+            <span className="ml-auto shrink-0 text-[0.66rem] text-ink-ghost/70">{headline.scope}</span>
             <ChevronUp
               size={11}
               className={cn(
@@ -82,16 +94,26 @@ export function UsageMeter({
                 className="overflow-hidden"
               >
                 <dl className="grid grid-cols-2 gap-x-4 gap-y-1 border-t border-line px-2.5 py-2 sm:grid-cols-3">
-                  {usageBreakdown(scope).map((row) => (
+                  {usageBreakdown(breakdown).map((row) => (
                     <div key={row.label} className="flex items-baseline justify-between gap-2">
                       <dt className="text-[0.7rem] text-ink-faint">{row.label}</dt>
                       <dd className="tabular font-mono text-[0.72rem] text-ink-muted">{row.value}</dd>
                     </div>
                   ))}
                   <div className="col-span-2 flex items-baseline justify-between gap-2 sm:col-span-3">
-                    <dt className="text-[0.7rem] text-ink-faint">Messages</dt>
-                    <dd className="tabular font-mono text-[0.72rem] text-ink-muted">{scope.messages}</dd>
+                    <dt className="text-[0.7rem] text-ink-faint">
+                      {context ? "Messages in this context" : "Messages"}
+                    </dt>
+                    <dd className="tabular font-mono text-[0.72rem] text-ink-muted">{breakdown.messages}</dd>
                   </div>
+                  {context && session && (
+                    <div className="col-span-2 flex items-baseline justify-between gap-2 sm:col-span-3">
+                      <dt className="text-[0.7rem] text-ink-faint">Spent on this thread</dt>
+                      <dd className="tabular font-mono text-[0.72rem] text-ink-muted">
+                        {formatCost(session.cost)}
+                      </dd>
+                    </div>
+                  )}
                 </dl>
               </motion.div>
             )}
@@ -101,5 +123,3 @@ export function UsageMeter({
     </div>
   );
 }
-
-export { Coins };

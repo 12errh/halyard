@@ -2,9 +2,10 @@
 import { createRoot } from "react-dom/client";
 import { Sidebar } from "@/components/shell/sidebar";
 import { TitleBar } from "@/components/shell/title-bar";
+import { SessionTabs } from "@/components/shell/session-tabs";
+import { UsageMeter } from "@/components/chat/usage-meter";
 import { Logo } from "@/components/shell/logo";
 import { LogoLockup, Wordmark } from "@/components/shell/wordmark";
-import { AsciiMark } from "@/components/shell/ascii-mark";
 import { Composer } from "@/components/chat/composer";
 import { MessageThread } from "@/components/chat/message-thread";
 import { TodoPanel } from "@/components/chat/todo-panel";
@@ -95,7 +96,7 @@ const PLAN = [
 
 createRoot(document.getElementById("root")!).render(
   <div className="flex h-screen">
-    <Sidebar onOpenSettings={() => {}} />
+    {mode !== "shell" && <Sidebar onOpenSettings={() => {}} />}
     {mode === "chat" && (
       <div className="flex min-w-0 flex-1 flex-col">
         <div className="min-h-0 flex-1">
@@ -104,7 +105,8 @@ createRoot(document.getElementById("root")!).render(
         <div className="border-t border-line/0">
           <Composer
             onSubmit={() => {}} onAbort={() => {}} busy={false}
-            suggestFiles={() => Promise.resolve([])}
+            suggestMentions={() => Promise.resolve([])}
+                listSkills={() => ({ skills: [], loading: false, error: null })}
             suggestCommands={() => Promise.resolve([])}
             canUndo={mode === "chat"} canRedo={false} canCompact={mode === "chat"}
             onUndo={() => {}} onRedo={() => {}} onCompact={() => {}}
@@ -121,17 +123,13 @@ createRoot(document.getElementById("root")!).render(
         <div>
           <Composer
             onSubmit={() => {}} onAbort={() => {}} busy={false}
-            suggestFiles={() => Promise.resolve([])}
+            suggestMentions={() => Promise.resolve([])}
+                listSkills={() => ({ skills: [], loading: false, error: null })}
             suggestCommands={() => Promise.resolve([])}
             canUndo={false} canRedo={false} canCompact={false}
             onUndo={() => {}} onRedo={() => {}} onCompact={() => {}}
           />
         </div>
-      </div>
-    )}
-    {mode === "ascii" && (
-      <div className="flex flex-1 items-center justify-center bg-canvas">
-        <AsciiMark />
       </div>
     )}
     {mode === "mark" && (
@@ -140,7 +138,36 @@ createRoot(document.getElementById("root")!).render(
         <Logo className="h-8 w-8" />
         <Logo className="h-5 w-5" />
         <Logo className="h-[18px] w-[18px]" />
-        <AsciiMark />
+      </div>
+    )}
+    {mode === "shell" && (
+      <div className="flex h-screen flex-col bg-canvas">
+        <SessionTabs />
+        <TitleBar
+          onToggleSidebar={() => {}} onToggleFileTree={() => {}}
+          fileTreeOpen={false} onOpenSettings={() => {}}
+        />
+        <div className="flex min-h-0 flex-1">
+          <div className="flex min-h-0 shrink-0 overflow-hidden" style={{ width: 280 }}>
+            <Sidebar onOpenSettings={() => {}} />
+          </div>
+          <main className="flex min-w-0 flex-1 flex-col">
+            <div className="min-h-0 flex-1">
+              <MessageThread entries={entries} live={false} agent="build" model="step-5-preview-free" />
+            </div>
+            <UsageMeter sessions={sessions} activeSession={sessions[0]} messages={undefined} />
+            <div className="border-t border-line/0 p-4">
+              <Composer
+                onSubmit={() => {}} onAbort={() => {}} busy={false}
+                suggestMentions={() => Promise.resolve([])}
+                listSkills={() => ({ skills: [], loading: false, error: null })}
+                suggestCommands={() => Promise.resolve([])}
+                canUndo canRedo={false} canCompact
+                onUndo={() => {}} onRedo={() => {}} onCompact={() => {}}
+              />
+            </div>
+          </main>
+        </div>
       </div>
     )}
     {mode === "title" && (
@@ -165,7 +192,8 @@ createRoot(document.getElementById("root")!).render(
         <div className="w-full">
           <Composer
             onSubmit={() => {}} onAbort={() => {}} busy={false}
-            suggestFiles={() => Promise.resolve([])}
+            suggestMentions={() => Promise.resolve([])}
+                listSkills={() => ({ skills: [], loading: false, error: null })}
             suggestCommands={() => Promise.resolve([])}
             modelPicker={
               <span className="flex items-center gap-1.5">

@@ -8,7 +8,7 @@
 
 import { useEffect, useRef } from "react";
 import { notify, setAttention, windowIsFocused } from "@/lib/desktop";
-import { onOpenRequest, onMenuAction, type OpenRequest } from "@/lib/tauri";
+import { onOpenRequest, type OpenRequest } from "@/lib/tauri";
 import type { SessionStatus } from "@/lib/opencode/types";
 
 /** Busy state for every session, keyed by session id. */
@@ -89,7 +89,7 @@ export async function announceFinish(options: {
   return { notified, badged: true };
 }
 
-/** Wire the tray and menu-bar events to app actions. */
+/** Wire the tray menu to app actions. */
 export function useNativeShellActions(handlers: {
   onNewThread(): void;
   onOpenSettings(): void;
@@ -102,11 +102,6 @@ export function useNativeShellActions(handlers: {
     void onOpenRequest((request: OpenRequest) => {
       if (request.action === "newThread") onNewThread();
       else if (request.action === "settings") onOpenSettings();
-    }).then((un) => cleanups.push(un));
-
-    void onMenuAction((id) => {
-      if (id === "new-thread") onNewThread();
-      else if (id === "open-settings") onOpenSettings();
     }).then((un) => cleanups.push(un));
 
     // Removing a listener is best-effort. One that fails to unregister should

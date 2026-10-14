@@ -144,7 +144,7 @@ export function Sidebar({ onOpenSettings }: { onOpenSettings(): void }) {
   };
 
   return (
-    <aside className="flex w-[280px] shrink-0 flex-col border-r border-line bg-canvas">
+    <aside className="flex h-full min-h-0 w-[280px] shrink-0 flex-col bg-surface">
       {/* Project header */}
       <div className="relative border-b border-line px-2.5 py-2" ref={menuRef}>
         <button

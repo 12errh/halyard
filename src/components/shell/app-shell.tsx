@@ -16,7 +16,7 @@ import { Sidebar } from "@/components/shell/sidebar";
 import { TitleBar } from "@/components/shell/title-bar";
 import { FileTree } from "@/components/shell/file-tree";
 import { EmptyState } from "./empty-state";
-import { AsciiMark } from "@/components/shell/ascii-mark";
+import { Logo } from "@/components/shell/logo";
 import { TodoPanel } from "@/components/chat/todo-panel";
 import { SettingsDialog } from "./settings-dialog";
 import { toFileParts } from "@/lib/attachments";
@@ -37,6 +37,7 @@ import { useThreads } from "@/state/threads";
 import { useUi } from "@/state/ui";
 import { pendingFor, usePermissions } from "@/state/permissions";
 import { switchProject } from "@/actions/project";
+import { useCatalogue } from "@/state/catalogue";
 import { useModels } from "@/state/models";
 import { useMode } from "@/state/mode";
 import { useSystem } from "@/state/system";
@@ -58,6 +59,7 @@ export function AppShell() {
   const attach = useServer((s) => s.attach);
   const connect = useThreads((s) => s.connect);
   const load = useThreads((s) => s.load);
+  const clearThread = useThreads((s) => s.clear);
 
   const sidebarOpen = useUi((s) => s.sidebarOpen);
   const toggleSidebar = useUi((s) => s.toggleSidebar);
@@ -72,6 +74,7 @@ export function AppShell() {
   const activeId = useSessions((s) => s.activeId);
   const sessions = useSessions((s) => s.sessions);
   const setSessions = useSessions((s) => s.setSessions);
+  const setDirectory = useSessions((s) => s.setDirectory);
   const upsert = useSessions((s) => s.upsert);
   const openTab = useSessions((s) => s.openTab);
   const closeTab = useSessions((s) => s.closeTab);
@@ -168,6 +171,9 @@ export function AppShell() {
       // Keeps providers, models, agents and MCP status live: connecting a
       // provider or adding a server updates the settings tabs with no reload.
       ingestSystemEvent(event);
+      // A new plugin or skill lands as an event; the cached command list is
+      // stale the moment it does.
+      useCatalogue.getState().ingest(event);
       ingestQuestionEvent(event);
       ingestTodoEvent(event);
       ingestProjectEvent(event);
@@ -190,6 +196,11 @@ export function AppShell() {
       .catch(() => undefined);
 
     void (async () => {
+      // Scope the list to the directory this server was started in, before the
+      // sessions land. `GET /session` answers for the entire database, so
+      // without this the sidebar lists every conversation on the machine.
+      setDirectory(phase.info.project);
+
       const [all, statuses] = await Promise.all([
         client!.listSessions().catch(() => []),
         client!.status().catch(() => ({})),
@@ -221,6 +232,7 @@ export function AppShell() {
     client,
     connect,
     setSessions,
+    setDirectory,
     ingestPermission,
     ingestSessionEvent,
     ingestSystemEvent,
@@ -249,6 +261,25 @@ export function AppShell() {
       if (restored.length > 0) syncQuestions(restored);
     })();
   }, [activeId, client, load, syncPermissions, syncQuestions]);
+
+  /**
+   * Re-read a thread after the server rewrote it.
+   *
+   * Undo, redo, compact and edit-and-resend all change history behind the
+   * client's back. The stream reports message updates, not deletions, so
+   * without this the transcript keeps showing turns that no longer exist and
+   * every one of those actions looks like it did nothing. `load` merges, so the
+   * thread is cleared first or the dropped messages simply stay.
+   */
+  const refreshThread = useCallback(
+    async (sessionID: string) => {
+      if (!client) return;
+      const entries = await client.messages(sessionID).catch(() => []);
+      clearThread(sessionID);
+      load(sessionID, entries);
+    },
+    [client, clearThread, load],
+  );
 
   // --- Actions -------------------------------------------------------------
 
@@ -305,6 +336,7 @@ export function AppShell() {
       if (!client || !activeId) return;
       await client.revert(activeId, messageID);
       await client.sendPrompt(activeId, { parts: [{ type: "text", text }] });
+      await refreshThread(activeId);
     },
     [client, activeId],
   );
@@ -352,33 +384,110 @@ export function AppShell() {
     const users = (thread.order ?? []).filter((id) => thread.messages[id]?.info?.role === "user");
     const last = users[users.length - 1];
     if (!last) return;
-    await client.revert(activeId, last).catch(() => undefined);
-  }, [client, activeId, thread]);
+    try {
+      await client.revert(activeId, last);
+    } catch (error) {
+      console.error("undo failed", error);
+      return;
+    }
+    await refreshThread(activeId);
+  }, [client, activeId, thread, refreshThread]);
 
   const redo = useCallback(async () => {
     if (!client || !activeId) return;
     await client.unrevert(activeId).catch(() => undefined);
-  }, [client, activeId]);
+    await refreshThread(activeId);
+  }, [client, activeId, refreshThread]);
 
   const compact = useCallback(async () => {
     // The picker holds the live choice; the session carries whatever it last
-    // used, which is the fallback when no model has been picked yet.
+    // used, and failing both, any model that is loaded will do. A summary with
+    // no model is rejected outright, and silently doing nothing reads as a
+    // broken button.
     const picked = useModels.getState().selection;
     const fallback = activeSessionInfo?.model;
+    const anyLoaded = useModels.getState().models[0];
     const model = picked
       ? { providerID: picked.providerID, modelID: picked.modelID }
       : fallback
         ? { providerID: fallback.providerID, modelID: fallback.id }
-        : null;
+        : anyLoaded
+          ? { providerID: anyLoaded.providerID, modelID: anyLoaded.modelID }
+          : null;
     if (!client || !activeId || !model) return;
     // The summary is generated, so it needs a model — opencode rejects the
     // request outright without one.
     try {
       await client.summarize(activeId, model);
-    } catch {
-      /* surfaced by the busy indicator going away */
+      // The server rewrites the whole transcript into a summary turn. Without
+      // a re-read the old history stays on screen and the summary arrives as
+      // an empty bubble.
+      await refreshThread(activeId);
+    } catch (error) {
+      console.error("compact failed", error);
     }
-  }, [client, activeId, activeSessionInfo]);
+  }, [client, activeId, activeSessionInfo, refreshThread]);
+
+  // --- @ and / suggestions -------------------------------------------------
+
+  // Both lists are cached for the life of the connection. Fetching them from
+  // the keystroke handler meant one request per character typed, and the menu
+  // stayed empty for the duration — which read as "opencode only has a couple
+  // of commands" and, when the request failed, as none at all.
+  // Three selectors, never one object. Zustand compares the selector's return
+  // value for identity, and an object literal is a new value on every render,
+  // so a combined selector puts useSyncExternalStore into an infinite loop —
+  // React throws "getSnapshot should be cached" and then "Maximum update depth
+  // exceeded", and the whole shell unmounts.
+  const skills = useCatalogue((s) => s.skills);
+  const catalogueLoading = useCatalogue((s) => s.loading);
+  const catalogueError = useCatalogue((s) => s.error);
+
+  useEffect(() => {
+    useCatalogue.getState().setClient(client);
+  }, [client]);
+
+  useEffect(() => {
+    void useCatalogue.getState().load();
+  }, [client]);
+
+  const suggestCommands = useCallback(async () => {
+    await useCatalogue.getState().load();
+    return useCatalogue.getState().commands;
+  }, []);
+
+  /**
+   * Files and agents, for `@`.
+   *
+   * Agents were missing entirely: `@` is how you reach the agent catalogue, and
+   * a thread could only be steered through files the server happened to index.
+   */
+  const suggestMentions = useCallback(
+    async (query: string) => {
+      const [paths, roster] = await Promise.all([
+        client ? client.files(query, 12).catch(() => [] as string[]) : Promise.resolve([] as string[]),
+        Promise.resolve(useSystem.getState().agents),
+      ]);
+      const needle = query.trim().toLowerCase();
+      return [
+        ...roster
+          .filter((agent) => !needle || agent.name.toLowerCase().includes(needle))
+          .map((agent) => ({
+            value: agent.name,
+            label: agent.name,
+            hint: agent.description ?? agent.mode,
+            kind: "agent" as const,
+          })),
+        ...paths.map((path) => ({
+          value: path,
+          label: path.split("/").pop() ?? path,
+          hint: path,
+          kind: "file" as const,
+        })),
+      ];
+    },
+    [client],
+  );
 
   const newSession = useCallback(async () => {
     if (!client) return;
@@ -456,6 +565,12 @@ export function AppShell() {
         return;
       }
       if (mod && event.key.toLowerCase() === "n") {
+        event.preventDefault();
+        void newSession();
+      }
+      // Ctrl+T used to live on the native menu bar. It is a browser reflex for
+      // "new tab", and the menu bar is gone.
+      if (mod && event.key.toLowerCase() === "t") {
         event.preventDefault();
         void newSession();
       }
@@ -561,6 +676,11 @@ export function AppShell() {
 
   return (
     <div className="flex h-full flex-col bg-canvas">
+      {/* Tabs first, toolbar second: the order a browser uses. They span the
+          full window rather than sitting over the chat column, because that is
+          what makes them read as tabs for windows rather than a strip bolted
+          onto one pane. */}
+      <SessionTabs />
       <TitleBar
         onToggleSidebar={() => toggleSidebar()}
         onToggleFileTree={() => toggleFileTree()}
@@ -571,14 +691,26 @@ export function AppShell() {
       <div className="flex min-h-0 flex-1">
         <AnimatePresence initial={false}>
           {sidebarOpen && (
-            <motion.div key="sidebar" initial={{ width: 0 }} animate={{ width: 248 }} exit={{ width: 0 }}>
+            <motion.div
+              key="sidebar"
+              initial={{ width: 0 }}
+              animate={{ width: 280 }}
+              exit={{ width: 0 }}
+              /* A plain block here would let the sidebar size itself to its
+                 content and let `overflow-hidden` crop the rest, which is how
+                 the bottom of the session list became unreachable: the list had
+                 all the height it wanted, just not on screen. Flex makes the
+                 sidebar take the row's height instead, so its own scroll area
+                 does the scrolling. 280 is the sidebar's width — animating to
+                 anything narrower sheared the timestamps off the edge. */
+              className="flex min-h-0 shrink-0 overflow-hidden"
+            >
               <Sidebar onOpenSettings={() => setSettingsOpen(true)} />
             </motion.div>
           )}
         </AnimatePresence>
 
         <main className="flex min-w-0 flex-1 flex-col">
-          <SessionTabs />
 
           {phase.kind === "failed" ? (
             <ServerFailure message={phase.message} logs={useServer.getState().logs} />
@@ -598,7 +730,13 @@ export function AppShell() {
                 onEditAndResend={editAndResend}
               />
 
-              <UsageMeter sessions={sessions} activeSession={activeSession} />
+              <UsageMeter
+                sessions={sessions}
+                activeSession={activeSession}
+                messages={thread?.order
+                  .map((id) => thread.messages[id]?.info)
+                  .filter((info): info is NonNullable<typeof info> => Boolean(info))}
+              />
 
               <StatusBar
                 entries={entries}
@@ -614,11 +752,13 @@ export function AppShell() {
                 busy={busy}
                 disabled={false}
                 placeholder="Ask opencode to do something…"
-                suggestFiles={(query) => client?.files(query, 12) ?? Promise.resolve([])}
+                suggestMentions={suggestMentions}
+                suggestCommands={suggestCommands}
+                listSkills={() => ({ skills, loading: catalogueLoading, error: catalogueError })}
                 plan={plan.length && pinPlan ? <TodoPanel todos={plan} /> : undefined}
                 canUndo={canUndo && !busy}
                 canRedo={canRedo && !busy}
-                canCompact={Boolean(activeId) && canUndo}
+                canCompact={Boolean(activeId)}
                 onUndo={() => void undo()}
                 onRedo={() => void redo()}
                 onCompact={() => void compact()}
@@ -633,17 +773,6 @@ export function AppShell() {
                     />
                   </>
                 }
-                suggestCommands={async () => {
-                  if (!client) return [];
-                  const commands = await client.commands().catch(() => []);
-                  return commands.map((c) => ({
-                    value: c.name,
-                    label: c.name,
-                    hint: c.description,
-                    source: (c as { source?: string }).source,
-                    kind: "command" as const,
-                  }));
-                }}
               />
             </>
           ) : (
@@ -658,7 +787,7 @@ export function AppShell() {
               initial={{ width: 0 }}
               animate={{ width: 260 }}
               exit={{ width: 0 }}
-              className="shrink-0 overflow-hidden border-l border-line"
+              className="shrink-0 overflow-hidden"
             >
               <FileTree />
             </motion.aside>
@@ -701,7 +830,7 @@ function Booting({ project, onPickFolder }: { project: string | null; onPickFold
   // this reads as progress rather than a stalled screen.
   return (
     <div className="flex flex-1 flex-col items-center justify-center gap-3 text-ink-faint">
-      <AsciiMark />
+      <Logo className="h-11 w-11" />
       <p className="font-mono text-[0.84rem]">Starting opencode in {project}</p>
     </div>
   );

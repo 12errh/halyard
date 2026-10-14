@@ -1,7 +1,7 @@
 import { FolderOpen, TriangleAlert } from "lucide-react";
 import { motion } from "motion/react";
 import type { ReactNode } from "react";
-import { AsciiMark } from "./ascii-mark";
+import { Logo } from "./logo";
 
 /**
  * Empty state.
@@ -33,7 +33,7 @@ export function EmptyState({
       className="flex max-w-md flex-col items-center gap-3 text-center"
     >
       {mark && !danger ? (
-        <AsciiMark className="-mb-1" />
+        <Logo className="h-11 w-11 -mb-1" />
       ) : (
         <span
           className={

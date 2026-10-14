@@ -35,32 +35,47 @@ interface Directory {
  * Directories load lazily, because walking a monorepo root eagerly is slow.
  */
 export function FileTree() {
+  // The tree used to ask the server once, on mount, and take "not ready yet" as
+  // an answer. Opening the panel before the server was up — which is the normal
+  // case on a cold start — left it permanently empty until the window was
+  // closed and reopened, twice over. Watching the phase means it fills in the
+  // moment the server answers.
+  const url = useServer((s) => (s.phase.kind === "ready" ? s.phase.info.url : null));
+  const phase = useServer((s) => s.phase);
   const [root, setRoot] = useState<Directory | null>(null);
   const [expanded, setExpanded] = useState<Set<string>>(new Set());
   const [children, setChildren] = useState<Record<string, Directory>>({});
   const [filter, setFilter] = useState("");
   const [error, setError] = useState<string | null>(null);
 
-  const load = useCallback(async (path?: string) => {
-    try {
-      setError(null);
-      if (!path) {
-        const nodes = await loadChildren("");
-        setRoot({ path: "", nodes, loading: false });
-        setExpanded(new Set());
-        setChildren({});
+  const load = useCallback(
+    async (path?: string, client?: OpencodeClient | null) => {
+      const api = client ?? currentClient();
+      if (!api) {
+        setError("opencode is not running yet");
         return;
       }
-      const nodes = await loadChildren(path);
-      setChildren((prev) => ({ ...prev, [path]: { path, nodes, loading: false } }));
-    } catch (cause) {
-      setError((cause as Error).message || "could not list files");
-    }
-  }, []);
+      try {
+        setError(null);
+        if (!path) {
+          const nodes = await listFiles(api, "");
+          setRoot({ path: "", nodes, loading: false });
+          setExpanded(new Set());
+          setChildren({});
+          return;
+        }
+        const nodes = await listFiles(api, path);
+        setChildren((prev) => ({ ...prev, [path]: { path, nodes, loading: false } }));
+      } catch (cause) {
+        setError((cause as Error).message || "could not list files");
+      }
+    },
+    [],
+  );
 
   useEffect(() => {
-    void load();
-  }, [load]);
+    void load(undefined, url ? new OpencodeClient(url) : null);
+  }, [load, url]);
 
   const toggle = (node: FileNode) => {
     const isDirectory = node.type === "directory" || node.type === "dir";
@@ -77,7 +92,7 @@ export function FileTree() {
             [node.path]: { path: node.path, nodes: [], loading: true },
           }));
           try {
-            const nodes = await loadChildren(node.path);
+            const nodes = await listFiles(requireClient(), node.path);
             setChildren((prev) => ({ ...prev, [node.path]: { path: node.path, nodes, loading: false } }));
           } catch {
             setChildren((prev) => ({
@@ -110,8 +125,22 @@ export function FileTree() {
         </Button>
       </div>
 
-      <div className="scroll-area flex-1 py-1">
-        {error && <p className="px-3 py-2 text-[0.76rem] text-danger">{error}</p>}
+      <div className="scroll-area min-h-0 flex-1 py-1">
+        {error ? (
+          <div className="px-3 py-2">
+            <p className="text-[0.76rem] text-danger">{error}</p>
+            <Button variant="ghost" size="sm" className="mt-1" onClick={() => void load()}>
+              <RefreshCw size={12} />
+              Try again
+            </Button>
+          </div>
+        ) : null}
+
+        {!error && !root && (
+          <p className="px-3 py-2 text-[0.76rem] text-ink-ghost">
+            {phase.kind === "ready" ? "loading…" : "Waiting for opencode…"}
+          </p>
+        )}
 
         {root?.loading && (
           <p className="px-3 py-2 text-[0.76rem] text-ink-ghost">loading…</p>
@@ -231,9 +260,20 @@ function codeFile(name: string): boolean {
   return CODE_EXTENSIONS.has(ext);
 }
 
-async function loadChildren(path: string): Promise<FileNode[]> {
+/** The client for the server as it is right now, or null if it is not up. */
+function currentClient(): OpencodeClient | null {
   const phase = useServer.getState().phase;
-  if (phase.kind !== "ready") return [];
-  return new OpencodeClient(phase.info.url).listFiles(path);
+  return phase.kind === "ready" ? new OpencodeClient(phase.info.url) : null;
+}
+
+/** The current client, for a lazy expand that cannot wait for a render. */
+function requireClient(): OpencodeClient {
+  const client = currentClient();
+  if (!client) throw new Error("opencode is not running yet");
+  return client;
+}
+
+async function listFiles(client: OpencodeClient, path: string): Promise<FileNode[]> {
+  return client.listFiles(path);
 }
 

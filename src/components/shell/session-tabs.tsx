@@ -10,6 +10,12 @@ import { cn } from "@/lib/utils";
  * The user asked for sessions to sit as switchable tabs across the top of the
  * workspace, so this behaves like a browser tab strip: click to activate, the
  * middle-click / close button to dismiss, and Ctrl+Tab to cycle.
+ *
+ * Chrome's look, minus its lines. A tab strip made of outlined boxes reads as a
+ * stack of cards; a browser gets its shape from tone alone — inactive tabs sit
+ * a shade off the strip, the active one takes the page colour and hangs off the
+ * bottom edge, and the only rule anywhere is a coloured line along the top of
+ * the tab you are on.
  */
 export function SessionTabs() {
   const tabs = useSessions((s) => s.tabs);
@@ -30,7 +36,7 @@ export function SessionTabs() {
   return (
     <div
       ref={strip}
-      className="scroll-area flex h-9 shrink-0 items-stretch gap-px overflow-x-auto border-b border-line bg-canvas pl-1.5"
+      className="scroll-area flex h-9 shrink-0 items-end gap-1 overflow-x-auto bg-raised px-1.5 pb-0 pt-1"
       role="tablist"
       aria-label="Open sessions"
     >
@@ -58,16 +64,16 @@ export function SessionTabs() {
                 }
               }}
               className={cn(
-                "group relative flex max-w-[220px] shrink-0 items-center gap-1.5 rounded-t-[8px] border border-b-0 px-2.5 text-[0.78rem] transition-colors duration-150",
+                "group relative flex h-8 max-w-[220px] shrink-0 items-center gap-1.5 rounded-t-[9px] px-2.5 text-[0.78rem] transition-colors duration-150",
                 active
-                  ? "border-line bg-surface text-ink"
-                  : "border-transparent text-ink-faint hover:bg-raised/60 hover:text-ink-muted",
+                  ? "bg-canvas text-ink"
+                  : "text-ink-faint hover:bg-surface/70 hover:text-ink-muted",
               )}
             >
               {active && (
                 <motion.span
                   layoutId="tab-underline"
-                  className="absolute inset-x-0 -top-px h-px bg-accent"
+                  className="absolute inset-x-1 top-0 h-[2px] rounded-full bg-accent"
                   transition={{ type: "spring", stiffness: 420, damping: 34 }}
                 />
               )}
@@ -94,3 +100,4 @@ export function SessionTabs() {
     </div>
   );
 }
+
