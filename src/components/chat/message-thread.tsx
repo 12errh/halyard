@@ -200,21 +200,23 @@ function Turn({
         // User: a bubble on the right, so the two sides are unmistakable at a
         // glance rather than distinguished only by a label.
         <div className="max-w-[85%] min-w-0">
-          <div className="mb-1 flex items-baseline justify-end gap-2 pr-0.5">
-            <time
-              className={cn(
-                "text-[0.66rem] text-ink-ghost",
-                !showTimestamps && "opacity-0 transition-opacity group-hover:opacity-100",
-              )}
-            >
-              {formatTime(createdAt)}
-            </time>
+          {/* Provenance sits above the bubble and stays out of the way until
+              the turn is hovered. A permanently visible timestamp and Edit
+              label on every message is pure noise. */}
+          <div
+            className={cn(
+              "mb-1 flex items-baseline justify-end gap-2 pr-0.5",
+              "h-4 transition-opacity duration-150",
+              showTimestamps ? "opacity-100" : "opacity-0 group-hover:opacity-100 focus-within:opacity-100",
+            )}
+          >
+            <time className="text-[0.66rem] text-ink-ghost">{formatTime(createdAt)}</time>
             {canEdit && !editing && (
               <button
                 type="button"
                 onClick={() => setEditing(true)}
                 aria-label="Edit and resend"
-                className="rounded px-1 py-0.5 text-[0.68rem] text-ink-ghost transition-colors hover:text-ink-muted"
+                className="rounded px-1 text-[0.68rem] text-ink-ghost transition-colors hover:text-accent"
               >
                 Edit
               </button>

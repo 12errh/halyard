@@ -109,6 +109,16 @@ export function useNativeShellActions(handlers: {
       else if (id === "open-settings") onOpenSettings();
     }).then((un) => cleanups.push(un));
 
-    return () => cleanups.forEach((fn) => fn());
+    // Removing a listener is best-effort. One that fails to unregister should
+    // not take the window down with it.
+    return () => {
+      for (const fn of cleanups) {
+        try {
+          fn();
+        } catch {
+          /* the listener dies with the window anyway */
+        }
+      }
+    };
   }, [onNewThread, onOpenSettings]);
 }

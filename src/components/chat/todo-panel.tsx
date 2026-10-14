@@ -1,6 +1,6 @@
 import { useEffect, useState } from "react";
 import { AnimatePresence, motion } from "motion/react";
-import { Check, ChevronRight, CircleDashed, Loader2, X } from "lucide-react";
+import { Check, ChevronRight, CircleDashed, ListChecks, Loader2, X } from "lucide-react";
 import type { Todo, TodoStatus } from "@/lib/opencode/types";
 import { todoProgress } from "@/lib/opencode/types";
 import { AUTO_EXPAND_LIMIT } from "@/state/todos";
@@ -27,19 +27,18 @@ function toneFor(status: TodoStatus): string {
  */
 export function TodoPanel({ todos, className = "" }: { todos: Todo[]; className?: string }) {
   const { done, total, active } = todoProgress(todos);
+  // Never auto-expands. The full list already appears in the transcript where
+  // the agent wrote it; repeating it here just made the plan appear twice on
+  // one screen. What belongs here is the state of it at a glance.
   const [expanded, setExpanded] = useState(false);
 
-  // Re-fold whenever the list grows past the limit, so a long plan never
-  // appears without being asked for.
   useEffect(() => {
-    setExpanded(todos.length <= AUTO_EXPAND_LIMIT);
+    if (todos.length > AUTO_EXPAND_LIMIT) setExpanded(false);
   }, [todos.length]);
 
   if (!total) return null;
 
   const pct = total ? Math.round((done / total) * 100) : 0;
-  // A short plan is shown outright — there is nothing to protect the user
-  // from. The toggle exists for long ones, which start folded.
   const showList = expanded;
 
   return (
@@ -47,7 +46,7 @@ export function TodoPanel({ todos, className = "" }: { todos: Todo[]; className?
       initial={{ opacity: 0, y: -4 }}
       animate={{ opacity: 1, y: 0 }}
       transition={{ duration: 0.2 }}
-      className={`rounded-[var(--radius-card)] border border-line bg-raised/50 px-3 py-2 ${className}`}
+      className={`rounded-[var(--radius-card)] border border-line/70 bg-surface/60 px-2.5 py-1.5 ${className}`}
     >
       <button
         type="button"
@@ -59,17 +58,19 @@ export function TodoPanel({ todos, className = "" }: { todos: Todo[]; className?
           size={12}
           className={`shrink-0 text-ink-ghost transition-transform ${expanded ? "rotate-90" : ""}`}
         />
-        <span className="text-[0.76rem] font-medium text-ink-muted">
-          {done} of {total} done
+        <span className="truncate text-[0.74rem] text-ink-muted">
+          {active > 0 ? (
+            <>
+              <span className="text-accent">{currentLabel(todos)}</span>
+              <span className="text-ink-ghost"> · {done}/{total} done</span>
+            </>
+          ) : (
+            <span className="text-ink-ghost">{done} of {total} done</span>
+          )}
         </span>
-        {active > 0 && (
-          <span className="text-[0.7rem] text-accent">
-            {active} in progress
-          </span>
-        )}
 
         <span className="ml-auto flex items-center gap-2">
-          <span className="h-[3px] w-16 overflow-hidden rounded-full bg-line">
+          <span className="h-[3px] w-20 overflow-hidden rounded-full bg-line">
             <motion.span
               className="block h-full rounded-full bg-accent"
               initial={false}
@@ -111,30 +112,40 @@ export function TodoPanel({ todos, className = "" }: { todos: Todo[]; className?
   );
 }
 
-/** Inline rendering of a `todowrite` call inside the transcript. */
+/**
+ * A `todowrite` call inside the transcript.
+ *
+ * Deliberately a marker rather than a second copy of the list. The plan itself
+ * is shown once, in the pinned strip above the composer, where its current
+ * state is always in view; repeating the full list here made the same three
+ * lines appear twice on one screen and turned a status line into the heaviest
+ * element in the thread.
+ */
 export function TodoBlock({ todos, truncated }: { todos: Todo[]; truncated?: boolean }) {
   if (!todos.length) return null;
-  const { done } = todoProgress(todos);
+  const { done, total, active } = todoProgress(todos);
+
+  const summary = active
+    ? todos.find((t) => t.status === "in_progress")?.content ?? "Working"
+    : done === total
+      ? "All done"
+      : `${done} of ${total} done`;
 
   return (
-    <div className="my-1.5 rounded-[var(--radius-card)] border border-line bg-raised/40 px-2.5 py-2">
-      <div className="mb-1.5 flex items-center gap-2">
-        <span className="text-[0.72rem] font-medium text-ink-muted">Plan</span>
-        <span className="text-[0.68rem] text-ink-ghost">
-          {done}/{todos.length}
-        </span>
-        {truncated && <span className="text-[0.68rem] text-ink-ghost">· truncated</span>}
-      </div>
-      <ul className="space-y-0.5">
-        {todos.map((todo, index) => (
-          <li key={todo.id ?? `${index}-${todo.content}`} className="flex items-start gap-2 text-[0.76rem]">
-            <span className={`mt-[3px] shrink-0 ${toneFor(todo.status as TodoStatus)}`}>
-              {iconFor(todo.status as TodoStatus)}
-            </span>
-            <span className={`min-w-0 flex-1 ${toneFor(todo.status as TodoStatus)}`}>{todo.content}</span>
-          </li>
-        ))}
-      </ul>
+    <div
+      className="my-1 flex items-center gap-2 py-0.5 text-[0.73rem] text-ink-faint"
+      data-selectable
+    >
+      <ListChecks size={11} className="shrink-0 text-ink-ghost" />
+      <span className="shrink-0 text-ink-ghost">Plan updated</span>
+      <span className="shrink-0 text-line-strong">·</span>
+      <span className="min-w-0 flex-1 truncate">{summary}</span>
+      {truncated && <span className="shrink-0 text-ink-ghost/70">truncated</span>}
     </div>
   );
+}
+
+/** The item currently being worked on, for the pinned strip. */
+function currentLabel(todos: Todo[]): string {
+  return todos.find((t) => t.status === "in_progress")?.content ?? "In progress";
 }

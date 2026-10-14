@@ -5,10 +5,13 @@ import { SectionLabel } from "@/components/ui/primitives";
 
 export function Group({ label, hint, children }: { label: string; hint?: string; children: ReactNode }) {
   return (
-    <section className="mb-6 last:mb-0">
-      <div className="mb-2 flex items-baseline gap-2">
+    <section className="mb-7 last:mb-0">
+      {/* The hint goes under the label rather than beside it. Run together on
+          one line they read as a single sentence — "FONT Applies everywhere" —
+          which is not what either half means. */}
+      <div className="mb-2.5">
         <SectionLabel>{label}</SectionLabel>
-        {hint && <span className="text-[0.68rem] text-ink-ghost">{hint}</span>}
+        {hint && <p className="mt-1 text-[0.7rem] leading-relaxed text-ink-faint">{hint}</p>}
       </div>
       {children}
     </section>

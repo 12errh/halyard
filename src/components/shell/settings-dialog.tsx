@@ -41,7 +41,7 @@ const TABS: Array<{ id: TabId; label: string }> = [
   { id: "resources", label: "Skills" },
   { id: "permissions", label: "Permissions" },
   { id: "config", label: "Config" },
-  { id: "lsp", label: "LSP & Formatters" },
+  { id: "lsp", label: "LSP" },
 ];
 
 export function SettingsDialog({
@@ -105,7 +105,7 @@ export function SettingsDialog({
             animate={{ opacity: 1, scale: 1, y: 0 }}
             exit={{ opacity: 0, scale: 0.985, y: 4 }}
             transition={{ duration: 0.2, ease: [0.22, 1, 0.36, 1] }}
-            className="relative flex h-[min(700px,86vh)] w-[min(960px,94vw)] flex-col overflow-hidden rounded-[var(--radius-panel)] border border-line-strong bg-surface shadow-[var(--shadow-panel)]"
+            className="relative flex h-[min(780px,90vh)] w-[min(1000px,94vw)] flex-col overflow-hidden rounded-[var(--radius-panel)] border border-line-strong bg-surface shadow-[var(--shadow-panel)]"
           >
             <header className="flex items-center justify-between border-b border-line px-4 py-2.5">
               <h2 className="text-[0.9rem] font-medium tracking-tight">Settings</h2>

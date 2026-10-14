@@ -308,7 +308,7 @@ export function Sidebar({ onOpenSettings }: { onOpenSettings(): void }) {
               return (
                 <li key={session.id}>
                   <div
-                    className={cnRow(selected)}
+                    className={cn(cnRow(selected), "group/session relative")}
                     onClick={() => openTab(session.id)}
                     onAuxClick={(event) => {
                       // Middle-click deletes, like a browser tab. Destructive, so
@@ -382,7 +382,18 @@ export function Sidebar({ onOpenSettings }: { onOpenSettings(): void }) {
                       </span>
                     )}
 
-                    <span className="flex shrink-0 items-center gap-0.5 opacity-0 transition-opacity group-hover:opacity-100 focus-within:opacity-100">
+                    {/* Overlaid rather than in flow. Fading a strip of seven
+                        buttons to `opacity: 0` still reserved their width, which
+                        on a narrow sidebar left about four characters for the
+                        session title. */}
+                    <span
+                      className={cn(
+                        "pointer-events-none absolute right-1 top-1/2 flex -translate-y-1/2 items-center gap-0.5",
+                        "rounded-[5px] bg-raised/95 pl-1.5 pr-0.5 backdrop-blur-sm",
+                        "opacity-0 transition-opacity duration-150",
+                        "group-hover/session:pointer-events-auto group-hover/session:opacity-100 focus-within:pointer-events-auto focus-within:opacity-100",
+                      )}
+                    >
                       <RowAction
                         label="Rename session"
                         onClick={(event) => {
@@ -569,7 +580,7 @@ function RowAction({
 
 function cnRow(selected: boolean) {
   return [
-    "group flex cursor-default items-center gap-2 rounded-[6px] px-2 py-1.5 transition-colors duration-150",
+    "group/session group flex cursor-default items-center gap-1.5 rounded-[7px] px-2 py-[7px] transition-colors duration-150",
     selected ? "bg-raised text-ink" : "text-ink-muted hover:bg-raised/60 hover:text-ink",
   ].join(" ");
 }

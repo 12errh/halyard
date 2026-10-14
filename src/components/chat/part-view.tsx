@@ -106,8 +106,17 @@ export function ToolRow({ part }: { part: ToolPart }) {
   return (
     <div
       className={cn(
-        "group/tool my-1 overflow-hidden rounded-[var(--radius-card)] border bg-surface/70 transition-colors",
-        failed ? "border-danger/30" : "border-line/80 hover:border-line",
+        // Flat until it is opened or hovered. A stack of fully-bordered cards
+        // reads as a list of boxes competing with the prose they exist to
+        // support, rather than as quiet annotation on it.
+        "group/tool overflow-hidden rounded-[var(--radius-card)] transition-colors",
+        open
+          ? failed
+            ? "border border-danger/30 bg-surface/70"
+            : "border border-line bg-surface/70"
+          : failed
+            ? "border border-transparent bg-danger/[0.05] hover:bg-danger/[0.07]"
+            : "border border-transparent hover:bg-raised/50",
       )}
     >
       <button
@@ -115,14 +124,16 @@ export function ToolRow({ part }: { part: ToolPart }) {
         onClick={expandable ? () => setOpen((v) => !v) : undefined}
         aria-expanded={expandable ? open : undefined}
         className={cn(
-          "flex w-full items-center gap-2 py-1.5 pl-2 pr-2 text-left",
+          "flex w-full items-center gap-2 py-1 pl-2 pr-2 text-left",
           expandable && "cursor-pointer",
         )}
       >
+        {/* Status is a quiet tick in the left gutter rather than a full-height
+            rule; four rules stacked read as a barcode. */}
         <span
           className={cn(
-            "h-3.5 w-[2px] shrink-0 rounded-full transition-colors",
-            active ? "bg-live" : failed ? "bg-danger" : "bg-good/70",
+            "h-[3px] w-[3px] shrink-0 rounded-full transition-colors",
+            active ? "bg-live" : failed ? "bg-danger" : "bg-good/60",
           )}
         />
 
@@ -133,6 +144,7 @@ export function ToolRow({ part }: { part: ToolPart }) {
         <span data-selectable className="min-w-0 flex-1 truncate text-[0.76rem] text-ink-muted">
           {view.title}
         </span>
+
 
         {view.description && (
           <span data-selectable className="hidden shrink-0 truncate text-[0.68rem] text-ink-ghost sm:block">

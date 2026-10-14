@@ -35,14 +35,22 @@ export function UsageMeter({
   if (scope.total === 0 && scope.cost === 0) return null;
 
   return (
-    <div className="px-5 pb-1.5">
+    <div className="px-5 pb-1">
       <div className="mx-auto w-full max-w-[760px]">
-        <div className="overflow-hidden rounded-[var(--radius-card)] border border-line bg-surface/60">
+        {/* Borderless until opened. Three stacked outlined panels above the
+            composer read as a wall of chrome; the composer is the one element
+            that should feel solid, because it is the one you touch. */}
+        <div
+          className={cn(
+            "overflow-hidden transition-colors",
+            open ? "rounded-[var(--radius-card)] border border-line bg-surface/60" : "",
+          )}
+        >
           <button
             type="button"
             onClick={() => setOpen((v) => !v)}
             aria-expanded={open}
-            className="flex w-full items-center gap-2 px-2.5 py-1 text-left transition-colors hover:bg-raised/60"
+            className="flex w-full items-center gap-2 rounded-[6px] px-2 py-0.5 text-left transition-colors hover:bg-raised/50"
           >
             <Cpu size={11} className="shrink-0 text-ink-faint" />
             <span className="tabular font-mono text-[0.7rem] text-ink-faint">
@@ -52,7 +60,7 @@ export function UsageMeter({
             <span className="tabular font-mono text-[0.7rem] text-ink-faint">
               {formatCost(scope.cost)}
             </span>
-            <span className="ml-auto shrink-0 text-[0.68rem] text-ink-ghost">
+            <span className="ml-auto shrink-0 text-[0.66rem] text-ink-ghost/70">
               {activeSession ? "this session" : "this project"}
             </span>
             <ChevronUp

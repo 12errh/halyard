@@ -133,23 +133,34 @@ export function AppearanceTab() {
       </Group>
 
       <Group label="Font" hint="Applies everywhere, including chat and code.">
-        <div className="grid grid-cols-2 gap-1.5">
-          {FONT_OPTIONS.map((font) => (
+        {/* One compact row per face. As tall cards the seven of them filled the
+            whole tab and pushed everything below it off screen. */}
+        <div className="overflow-hidden rounded-[var(--radius-card)] border border-line">
+          {FONT_OPTIONS.map((font, index) => (
             <button
               key={font.id}
               type="button"
               onClick={() => ui.setFont(font.id)}
+              aria-pressed={appearance.font === font.id}
               className={cn(
-                "flex flex-col items-start gap-0.5 rounded-[7px] border px-2.5 py-2 text-left transition-colors",
-                appearance.font === font.id
-                  ? "border-accent/55 bg-accent/10"
-                  : "border-line hover:border-line-strong hover:bg-raised",
+                "flex w-full items-baseline gap-3 px-3 py-1.5 text-left transition-colors",
+                index > 0 && "border-t border-line/70",
+                appearance.font === font.id ? "bg-accent/[0.08]" : "hover:bg-raised/60",
               )}
             >
-              <span className="text-[0.82rem] text-ink" style={{ fontFamily: font.ui }}>
+              <span
+                className={cn(
+                  "w-[9.5rem] shrink-0 truncate text-[0.8rem]",
+                  appearance.font === font.id ? "text-accent" : "text-ink",
+                )}
+                style={{ fontFamily: font.ui }}
+              >
                 {font.label}
               </span>
-              <span className="text-[0.66rem] text-ink-ghost">{font.hint}</span>
+              <span className="min-w-0 flex-1 truncate text-[0.7rem] text-ink-faint">
+                {font.hint}
+              </span>
+              {appearance.font === font.id && <Check size={11} className="shrink-0 text-accent" />}
             </button>
           ))}
         </div>
@@ -163,20 +174,21 @@ export function AppearanceTab() {
           step={0.05}
           value={appearance.density}
           onChange={(event) => ui.setDensity(Number(event.target.value))}
+          aria-label="Interface density"
           className="w-full accent-[var(--accent)]"
         />
       </Group>
 
       <Group label="Motion">
-        <label className="flex items-center gap-2 text-[0.82rem] text-ink-muted">
-          <input
-            type="checkbox"
-            checked={appearance.reduceMotion}
-            onChange={(event) => ui.setReduceMotion(event.target.checked)}
-            className="accent-[var(--accent)]"
-          />
-          Reduce animation
-        </label>
+        {/* A Switch rather than a bare checkbox: the same control appears a
+            few rows below, and two different toggles in one column reads as
+            two different ideas. */}
+        <Switch
+          label="Reduce animation"
+          hint="Suppress decorative motion. The OS setting is respected regardless."
+          checked={appearance.reduceMotion}
+          onChange={(next) => ui.setReduceMotion(next)}
+        />
       </Group>
 
       <Group label="Desktop" hint="How Halyard behaves outside the window.">
@@ -340,7 +352,7 @@ export function ProvidersTab() {
               return (
                 <div
                   key={provider.id}
-                  className="flex items-center gap-2 border-b border-line/60 px-2.5 py-1.5 last:border-b-0"
+                  className="group flex items-center gap-2 border-b border-line/60 px-2.5 py-1.5 transition-colors last:border-b-0 hover:bg-raised/40"
                 >
                   <span className="min-w-0 flex-1">
                     <span className="block truncate text-[0.82rem] text-ink">{provider.name}</span>
@@ -556,7 +568,7 @@ export function ModelsTab() {
               return (
                 <div
                   key={`${model.providerID}/${model.id}`}
-                  className="flex items-center gap-2 border-b border-line/60 px-2.5 py-1.5 last:border-b-0"
+                  className="group flex items-center gap-2 border-b border-line/60 px-2.5 py-1.5 transition-colors last:border-b-0 hover:bg-raised/40"
                 >
                   <span className="min-w-0 flex-1">
                     <span className="flex items-center gap-1.5">
@@ -569,11 +581,15 @@ export function ModelsTab() {
                       {model.limit?.context ? ` · ${formatContext(model.limit.context)} ctx` : ""}
                     </span>
                   </span>
+                  {/* Hover-revealed. A list of models each carrying the same
+                      button reads as a column of repeated instructions; one
+                      appears only on the row you are looking at. */}
                   <Button
                     size="sm"
                     variant="ghost"
                     disabled={savingDefault}
                     onClick={() => void commitDefault(model.providerID, model.id)}
+                    className="opacity-0 transition-opacity focus-visible:opacity-100 group-hover:opacity-100"
                   >
                     Make default
                   </Button>
