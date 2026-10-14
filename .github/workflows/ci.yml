@@ -19,6 +19,8 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
+      # Pinned to the `packageManager` field, so CI and every developer run the
+      # same pnpm and the lockfile means what it says.
       - uses: pnpm/action-setup@v4
 
       - uses: actions/setup-node@v4
