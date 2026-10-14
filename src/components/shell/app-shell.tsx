@@ -530,14 +530,22 @@ export function AppShell() {
 
   // --- Render --------------------------------------------------------------
 
-  const entries: MessageEntry[] = activeId
-    ? (thread?.order ?? []).map((id) => thread!.messages[id]!).filter(Boolean)
-    : [];
+  // These three are rebuilt on every render otherwise, which means every
+  // streaming delta re-reconciles the entire history rather than the one
+  // message that changed. On a long thread that is the difference between
+  // instant and visibly slow.
+  const entries: MessageEntry[] = useMemo(
+    () =>
+      activeId && thread
+        ? thread.order.map((id) => thread.messages[id]!).filter(Boolean)
+        : [],
+    [activeId, thread],
+  );
 
   const status: SessionStatus = thread?.status ?? { type: "idle" };
   const busy = busyId !== null && status.type === "busy";
   const activeSession = sessions.find((s) => s.id === activeId);
-  const pending = pendingFor({ bySession: permissions }, activeId);
+  const pending = useMemo(() => pendingFor({ bySession: permissions }, activeId), [permissions, activeId]);
   const askedQuestions = pendingQuestionsFor({ bySession: questionsState }, activeId);
   const modelList = useModels((s) => s.models);
   const modelSelection = useModels((s) => s.selection);
@@ -546,7 +554,10 @@ export function AppShell() {
   const modes = useMode((s) => s.modes);
   const modeValue = useMode((s) => s.value);
   const setModeValue = useMode((s) => s.setValue);
-  const diffs = (thread?.diffs ?? []).map(normaliseDiff).filter((d) => d !== null);
+  const diffs = useMemo(
+    () => (thread?.diffs ?? []).map(normaliseDiff).filter((d) => d !== null),
+    [thread?.diffs],
+  );
 
   return (
     <div className="flex h-full flex-col bg-canvas">

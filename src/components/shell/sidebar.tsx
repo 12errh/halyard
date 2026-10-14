@@ -674,7 +674,15 @@ function RowMenu({
         }}
         onDoubleClick={(event) => event.stopPropagation()}
         className={cn(
-          "flex h-6 w-6 items-center justify-center rounded-[5px] text-ink-ghost transition-colors",
+          // The hit area grows leftwards only, staying inside the row.
+          //
+          // Growing it outwards would be worse than no change: the button only
+          // stays visible while the row is hovered, so a target that poked past
+          // the row's edge would be reached by leaving the row — at which point
+          // the button vanished and the click landed on nothing. This way you
+          // can come at it from anywhere in its neighbourhood.
+          "relative flex h-[26px] w-[26px] items-center justify-center rounded-[5px] text-ink-ghost transition-colors",
+          "after:absolute after:bottom-0 after:left-[-10px] after:right-0 after:top-0 after:content-['']",
           open ? "bg-raised text-ink" : "hover:bg-raised hover:text-ink",
         )}
       >

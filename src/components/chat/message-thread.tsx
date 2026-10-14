@@ -1,4 +1,4 @@
-import { useLayoutEffect, useRef, useState } from "react";
+import { memo, useLayoutEffect, useMemo, useRef, useState } from "react";
 import { Companion } from "./companion";
 import { AnimatePresence, motion } from "motion/react";
 import { ArrowDown, Paperclip, Sparkles } from "lucide-react";
@@ -45,12 +45,18 @@ export function MessageThread({
 }) {
   // Follow the stream, but never fight a user who has scrolled up.
   const { containerRef, contentRef, stuck, scrollToBottom } = useAutoScroll();
-  const normalised = diffs.map(normaliseDiff).filter((d): d is NormalisedDiff => d !== null);
+  const normalised = useMemo(
+    () => diffs.map(normaliseDiff).filter((d): d is NormalisedDiff => d !== null),
+    [diffs],
+  );
 
   // Entries whose `message.updated` has not arrived yet render nothing; drop
   // them here so the rest of the component can assume `info` is present.
-  const visible = entries.filter((entry) => entry.info !== null);
-  const lastAssistantId = [...visible].reverse().find((e) => e.info!.role === "assistant")?.info!.id;
+  const visible = useMemo(() => entries.filter((entry) => entry.info !== null), [entries]);
+  const lastAssistantId = useMemo(
+    () => [...visible].reverse().find((e) => e.info!.role === "assistant")?.info!.id,
+    [visible],
+  );
 
   return (
     <div className="relative flex min-h-0 flex-1 flex-col">
@@ -63,8 +69,12 @@ export function MessageThread({
         >
         {normalised.length > 0 && <DiffSummary diffs={normalised} />}
 
-        <AnimatePresence initial={false}>
-          {visible.map((entry, index) => (
+        {/* No AnimatePresence around the turns. It exists to animate entries
+            going in and out, and nothing here ever exits — but it still
+            re-diffs and re-renders every child on each parent render, which
+            on a long thread cost more than the messages themselves. Each turn
+            animates itself in. */}
+        {visible.map((entry, index) => (
             <Turn
               key={entry.info!.id}
               entry={entry}
@@ -72,12 +82,11 @@ export function MessageThread({
               showDiffAfter={
                 entry.info!.role === "assistant" && entry.info!.id === lastAssistantId
                   ? normalised
-                  : []
+                  : null
               }
-              onEditAndResend={onEditAndResend}
-            />
-          ))}
-        </AnimatePresence>
+            onEditAndResend={onEditAndResend}
+          />
+        ))}
 
         {/* Questions wait above permissions: the agent cannot proceed until one
             is answered, so it should be the first thing read. */}
@@ -149,7 +158,7 @@ export function MessageThread({
   );
 }
 
-function Turn({
+const Turn = memo(function Turn({
   entry,
   streaming,
   showDiffAfter,
@@ -157,11 +166,11 @@ function Turn({
 }: {
   entry: MessageEntry;
   streaming: boolean;
-  showDiffAfter: NormalisedDiff[];
+  showDiffAfter: NormalisedDiff[] | null;
   onEditAndResend?(messageID: string, text: string): Promise<void>;
 }) {
   const { info } = entry;
-  const parts = orderedParts(entry);
+  const parts = useMemo(() => orderedParts(entry), [entry]);
   const flowing = streaming || isStreaming(entry);
 
   // A delta can arrive before `message.updated`. Nothing is rendered until we
@@ -180,7 +189,14 @@ function Turn({
       initial={{ opacity: 0, y: 6 }}
       animate={{ opacity: 1, y: 0 }}
       transition={{ duration: 0.22, ease: [0.22, 1, 0.36, 1] }}
-      className={cn("group py-2.5", assistant ? "" : "flex justify-end")}
+      // `content-visibility` lets the browser skip layout and paint for turns
+      // that are scrolled out of view, while `contain-intrinsic-size` supplies
+      // a placeholder height so the scrollbar does not jump around as they
+      // come into range.
+      className={cn(
+        "group py-2.5 [contain-intrinsic-size:auto_64px] [content-visibility:auto]",
+        assistant ? "" : "flex justify-end",
+      )}
     >
       {assistant ? (
         // Assistant: full-width prose on the left. A bubble would fight the
@@ -254,10 +270,10 @@ function Turn({
         </div>
       )}
 
-      {showDiffAfter.length > 0 && <DiffSummary diffs={showDiffAfter} />}
+      {showDiffAfter && showDiffAfter.length > 0 && <DiffSummary diffs={showDiffAfter} />}
     </motion.article>
   );
-}
+});
 
 /** Non-text parts inside a user bubble — attachments and the like. */
 function UserPart({ part }: { part: Part }) {

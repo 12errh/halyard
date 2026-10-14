@@ -548,6 +548,10 @@ function TurnMenu({
   ];
 
   const available = items.some((item) => !item.disabled);
+  // With no chat open there is nothing to undo, redo or compact. A dead "…"
+  // sitting in the toolbar reads as a broken control, so it goes away rather
+  // than greying out.
+  if (!available) return null;
 
   return (
     <div ref={ref} className="relative ml-auto">

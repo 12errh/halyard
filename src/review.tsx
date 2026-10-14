@@ -37,7 +37,7 @@ const sessions: Session[] = TITLES.map((title, i) => ({
   cost: i * 0.01, tokens: { input: 12000, output: 2000, reasoning: 400, cache: { read: 4000, write: 0 } },
 }));
 
-const mode = new URLSearchParams(location.search).get("view");
+const mode: string | null = new URLSearchParams(location.search).get("view");
 
 useProjects.setState({ active: "/home/me/repo/api", recent: ["/home/me/repo/api", "/home/me/repo/web"], loaded: true });
 useSessions.setState({ sessions, tabs: ["s0"], activeId: "s0" });
@@ -102,9 +102,9 @@ createRoot(document.getElementById("root")!).render(
             onSubmit={() => {}} onAbort={() => {}} busy={false}
             suggestFiles={() => Promise.resolve([])}
             suggestCommands={() => Promise.resolve([])}
-            canUndo canRedo={false} canCompact
+            canUndo={mode === "chat"} canRedo={false} canCompact={mode === "chat"}
             onUndo={() => {}} onRedo={() => {}} onCompact={() => {}}
-            plan={<TodoPanel todos={PLAN} />}
+            plan={mode === "chat" ? <TodoPanel todos={PLAN} /> : undefined}
           />
         </div>
       </div>
@@ -122,7 +122,7 @@ createRoot(document.getElementById("root")!).render(
                 <span className="rounded-full border border-line px-2 py-[3px] text-[0.72rem] text-ink-muted">Step 5 Preview (free)</span>
               </span>
             }
-            canUndo canRedo={false} canCompact
+            canUndo={false} canRedo={false} canCompact={false}
             onUndo={() => {}} onRedo={() => {}} onCompact={() => {}}
           />
         </div>
