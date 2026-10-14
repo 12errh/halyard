@@ -1,4 +1,4 @@
-import type { Session, TokenUsage } from "@/lib/opencode/types";
+import type { MessageInfo, Session, TokenUsage } from "@/lib/opencode/types";
 
 /**
  * Token and cost accounting for a session.
@@ -70,8 +70,40 @@ export function aggregateUsage(sessions: Session[]): UsageTotals {
   return finish(totals);
 }
 
+/**
+ * Tokens that were new work, leaving cache reads out.
+ *
+ * A cache read is counted again on every turn that hits the same prefix, so a
+ * session's `total` is dominated by repetition: it climbs into the hundreds of
+ * millions over a long thread without the model ever having seen that many
+ * tokens at once.
+ */
+export function billedTokens(totals: UsageTotals): number {
+  return totals.input + totals.output + totals.reasoning + totals.cacheWrite;
+}
+
+/**
+ * What the model is carrying right now — the last turn's context.
+ *
+ * This, not the session's lifetime total, is the number worth watching while
+ * you read a thread: it is the size of the prompt that produced the reply
+ * above you, and it is what decides whether the next turn still fits.
+ */
+export function contextUsage(messages: MessageInfo[] | undefined): UsageTotals | null {
+  if (!messages) return null;
+  let latest: UsageTotals | null = null;
+  for (const info of messages) {
+    if (info.role !== "assistant" || info.summary) continue;
+    const totals: UsageTotals = { ...EMPTY };
+    add(totals, info.tokens, info.cost);
+    latest = finish(totals);
+  }
+  return latest;
+}
+
 export function formatTokens(count: number): string {
   if (count <= 0) return "0";
+  if (count >= 1_000_000_000) return `${(count / 1_000_000_000).toFixed(2)}B`;
   if (count >= 1_000_000) return `${(count / 1_000_000).toFixed(2)}M`;
   if (count >= 1_000) return `${(count / 1_000).toFixed(1)}k`;
   return String(count);

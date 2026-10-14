@@ -16,7 +16,19 @@ interface SessionStore {
   tabs: string[];
   activeId: string | null;
   query: string;
+  /**
+   * The project this window is scoped to, as the server reports it.
+   *
+   * `GET /session` answers for the whole database, not for the directory the
+   * server happens to be running in, so opening one project used to list every
+   * conversation this opencode install has ever had. Every ingress into
+   * `sessions` — the initial fetch, an SSE `session.created`, a rename — is
+   * filtered against this, so a session from another project can never appear
+   * and then have to be explained away.
+   */
+  directory: string | null;
 
+  setDirectory(directory: string | null): void;
   setSessions(sessions: Session[]): void;
   upsert(session: Session): void;
   remove(sessionId: string): void;
@@ -69,9 +81,28 @@ export const useSessions = create<SessionStore>((set) => ({
   query: "",
   children: {},
   expandedParents: {},
+  directory: null,
 
-  setSessions: (sessions) =>
+  setDirectory: (directory) =>
     set((state) => {
+      if (state.directory === directory) return state;
+      // A different project is a different set of sessions. Keeping the old
+      // list would show the previous project's conversations against the new
+      // project's name, and any tab still pointing at one of them.
+      return {
+        directory,
+        sessions: [],
+        tabs: [],
+        activeId: null,
+        status: {},
+        children: {},
+        expandedParents: {},
+      };
+    }),
+
+  setSessions: (incoming) =>
+    set((state) => {
+      const sessions = incoming.filter((s) => inDirectory(s, state.directory));
       // Never leave a tab pointing at a session that no longer exists.
       const alive = new Set(sessions.map((s) => s.id));
       const tabs = state.tabs.filter((id) => alive.has(id));
@@ -81,6 +112,7 @@ export const useSessions = create<SessionStore>((set) => ({
 
   upsert: (session) =>
     set((state) => {
+      if (!inDirectory(session, state.directory)) return state;
       const index = state.sessions.findIndex((s) => s.id === session.id);
       if (index === -1) return { sessions: [session, ...state.sessions] };
       const sessions = [...state.sessions];
@@ -146,6 +178,9 @@ export const useSessions = create<SessionStore>((set) => ({
       if (event.type === "session.updated" || event.type === "session.created") {
         const info = (event.properties as { info?: Session }).info;
         if (!info?.id) return state;
+        // The event bus is server-wide, so another project's session arriving
+        // here is normal traffic, not something to surface.
+        if (!inDirectory(info, state.directory)) return state;
         const index = state.sessions.findIndex((s) => s.id === info.id);
         if (index === -1) return { ...state, sessions: [info, ...state.sessions] };
         const sessions = [...state.sessions];
@@ -187,6 +222,44 @@ export const useSessions = create<SessionStore>((set) => ({
 }));
 
 // --- Selectors ------------------------------------------------------------
+
+/**
+ * Normalise a filesystem path for comparison.
+ *
+ * Trailing separators are noise (`/srv/app` and `/srv/app/` are one
+ * directory), and Windows paths are case-insensitive — comparing them raw
+ * hides every session the instant the drive letter case differs from what the
+ * server reported.
+ */
+function normalisePath(value: string): string {
+  const trimmed = value.replace(/[\\/]+$/, "");
+  if (!/^[a-z]:[\\/]/i.test(trimmed)) return trimmed;
+  // Windows: one case, one separator. Without folding `\` to `/`, a scope of
+  // `C:\Users\Me\App` and a session recorded at `c:/users/me/app` — the same
+  // directory, two spellings — never compare equal and every session vanishes.
+  return trimmed.replace(/\\/g, "/").toLowerCase();
+}
+
+/**
+ * Whether a session belongs to the project this window has open.
+ *
+ * A session counts as in-scope when it was created in the project directory or
+ * anywhere beneath it, because opencode scopes a session to the directory it
+ * was started in and the user may have started one from a subfolder. The
+ * separator check is what keeps a sibling directory with a shared prefix — the
+ * classic `/srv/app` against `/srv/app-old` — from being swept in.
+ *
+ * With no directory set yet the store is unsorted, which is the honest state:
+ * filtering before the server has told us where it is would drop real sessions.
+ */
+export function inDirectory(session: Session, directory: string | null): boolean {
+  if (!directory) return true;
+  const scope = normalisePath(directory);
+  const candidate = normalisePath(session.directory ?? "");
+  if (!candidate) return false;
+  if (candidate === scope) return true;
+  return candidate.startsWith(scope.endsWith("/") || scope.endsWith("\\") ? scope : `${scope}/`);
+}
 
 /**
  * Top-level conversations only.

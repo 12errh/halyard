@@ -170,3 +170,89 @@ describe("session selectors", () => {
     expect(tabTitle([], "ses_missing")).toBe("ses_missing");
   });
 });
+
+describe("session store: project scoping", () => {
+  const scoped = (directory: string, id = "ses_1") => ({
+    ...session(id, "Scoped", 1),
+    directory,
+  });
+
+  beforeEach(() => {
+    reset();
+    useSessions.setState({ directory: null });
+  });
+
+  it("keeps only the sessions belonging to the open project", () => {
+    useSessions.getState().setDirectory("/home/me/app");
+    useSessions
+      .getState()
+      .setSessions([
+        scoped("/home/me/app", "mine"),
+        scoped("/home/me/other-project", "theirs"),
+        scoped("/var/log", "unrelated"),
+      ]);
+
+    expect(useSessions.getState().sessions.map((s) => s.id)).toEqual(["mine"]);
+  });
+
+  it("includes sessions started in a subfolder of the project", () => {
+    useSessions.getState().setDirectory("/home/me/app");
+    useSessions.getState().setSessions([scoped("/home/me/app/packages/ui", "nested")]);
+    expect(useSessions.getState().sessions).toHaveLength(1);
+  });
+
+  it("does not sweep in a sibling directory sharing a prefix", () => {
+    // The classic `/srv/app` vs `/srv/app-old` trap.
+    useSessions.getState().setDirectory("/srv/app");
+    useSessions.getState().setSessions([
+      scoped("/srv/app-old", "sibling"),
+      scoped("/srv/application", "also-sibling"),
+    ]);
+    expect(useSessions.getState().sessions).toEqual([]);
+  });
+
+  it("ignores another project's session arriving over the event stream", () => {
+    useSessions.getState().setDirectory("/home/me/app");
+    useSessions.getState().ingest({
+      type: "session.created",
+      properties: { info: scoped("/home/me/elsewhere", "theirs") },
+    } as never);
+    expect(useSessions.getState().sessions).toEqual([]);
+  });
+
+  it("ignores a session renamed into existence from another project", () => {
+    useSessions.getState().setDirectory("/home/me/app");
+    useSessions.getState().upsert(scoped("/home/me/elsewhere", "theirs"));
+    expect(useSessions.getState().sessions).toEqual([]);
+  });
+
+  it("empties the list when the project changes", () => {
+    useSessions.getState().setDirectory("/home/me/app");
+    useSessions.getState().setSessions([scoped("/home/me/app", "mine")]);
+    useSessions.getState().openTab("mine");
+
+    useSessions.getState().setDirectory("/home/me/other");
+
+    expect(useSessions.getState().sessions).toEqual([]);
+    expect(useSessions.getState().tabs).toEqual([]);
+    expect(useSessions.getState().activeId).toBeNull();
+  });
+
+  it("treats a trailing separator as the same directory", () => {
+    useSessions.getState().setDirectory("/home/me/app/");
+    useSessions.getState().setSessions([scoped("/home/me/app", "mine")]);
+    expect(useSessions.getState().sessions).toHaveLength(1);
+  });
+
+  it("matches Windows paths regardless of case", () => {
+    useSessions.getState().setDirectory("C:\\Users\\Me\\App");
+    useSessions.getState().setSessions([scoped("c:/users/me/app", "mine")]);
+    expect(useSessions.getState().sessions).toHaveLength(1);
+  });
+
+  it("does not filter at all until the server says where it is", () => {
+    // Filtering before the directory is known would drop real sessions.
+    useSessions.getState().setSessions([scoped("/anywhere", "a"), scoped("/elsewhere", "b")]);
+    expect(useSessions.getState().sessions).toHaveLength(2);
+  });
+});

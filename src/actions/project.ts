@@ -16,7 +16,15 @@ import { useModels } from "@/state/models";
 
 /** Clears every store whose contents are scoped to a single project. */
 export function resetProjectScope() {
-  useSessions.setState({ sessions: [], tabs: [], activeId: null, query: "" });
+  useSessions.setState({
+    sessions: [],
+    tabs: [],
+    activeId: null,
+    query: "",
+    // The scope is the old project's directory; keeping it would make the next
+    // project's sessions filter against a path they do not live under.
+    directory: null,
+  });
   useThreads.setState({ threads: {}, busySessionId: null, connection: "idle", handle: null });
   usePermissions.getState().reset();
   // Model ids belong to the server that issued them; the next one may differ.

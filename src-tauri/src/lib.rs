@@ -1,6 +1,5 @@
 //! Halyard — a native desktop shell for the opencode coding agent.
 
-pub mod app_menu;
 pub mod attention;
 pub mod binary;
 pub mod config;
@@ -43,9 +42,10 @@ pub fn run() {
                 crate::tray::build(&handle)?;
             }
 
-            // Windows and Linux expect a menu bar; without one the usual
-            // clipboard and select-all shortcuts silently do nothing.
-            crate::app_menu::build(&handle)?;
+            // No native menu bar. It cost a 40px row above the app for five
+            // items, and the accelerators it owned are better served from the
+            // webview, where the clipboard shortcuts work without a menu
+            // intercepting them first.
 
             Ok(())
         })

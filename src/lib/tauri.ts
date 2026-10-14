@@ -33,9 +33,6 @@ export interface Settings {
 export const EVENT_SERVER_STATUS = "halyard://server-status";
 export const EVENT_SERVER_LOG = "halyard://server-log";
 export const EVENT_OPEN = "halyard://open";
-/** Native menu bar clicks, forwarded from Rust. */
-export const EVENT_MENU = "__halyard_menu__";
-
 export interface ServerLogLine {
   level: "info" | "warn" | "stdout" | "stderr";
   message: string;
@@ -99,8 +96,4 @@ export type OpenRequest = { action: "window" } | { action: "newThread" } | { act
 
 export function onOpenRequest(handler: (request: OpenRequest) => void): Promise<UnlistenFn> {
   return listen<OpenRequest>(EVENT_OPEN, (event) => handler(event.payload));
-}
-
-export function onMenuAction(handler: (id: string) => void): Promise<UnlistenFn> {
-  return listen<string>(EVENT_MENU, (event) => handler(event.payload));
 }
