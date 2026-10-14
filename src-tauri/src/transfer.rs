@@ -10,7 +10,6 @@ use std::path::PathBuf;
 use std::process::Stdio;
 
 use serde::Serialize;
-use tokio::process::Command;
 
 use crate::binary;
 
@@ -30,10 +29,9 @@ enum RunError {
 }
 
 /// Run an opencode subcommand, returning stdout.
-async fn run(executable: &std::path::Path, args: &[String]) -> Result<String, RunError> {
-    let mut command = Command::new(executable);
+async fn run(executable: &binary::Resolved, args: &[String]) -> Result<String, RunError> {
+    let mut command = binary::command_for(executable, args);
     command
-        .args(args)
         // Keep the child's chatter out of our captured stdout.
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())
@@ -60,9 +58,9 @@ async fn run(executable: &std::path::Path, args: &[String]) -> Result<String, Ru
     Ok(String::from_utf8_lossy(&output.stdout).to_string())
 }
 
-fn resolve(binary_override: Option<PathBuf>) -> Result<PathBuf, RunError> {
-    binary::resolve(binary_override.as_deref(), None).map_err(|error| match error {
-        binary::BinaryError::NotFound => RunError::NoBinary,
+fn resolve(binary_override: Option<PathBuf>) -> Result<binary::Resolved, RunError> {
+    binary::resolve(binary_override.as_deref(), &[]).map_err(|error| match error {
+        binary::BinaryError::NotFound { .. } => RunError::NoBinary,
         other => RunError::Failed("opencode".into(), -1, other.to_string()),
     })
 }
@@ -89,7 +87,9 @@ pub async fn export_session(
     };
 
     if written.exists() {
-        let bytes = std::fs::metadata(&written).map(|m| m.len() as usize).unwrap_or(0);
+        let bytes = std::fs::metadata(&written)
+            .map(|m| m.len() as usize)
+            .unwrap_or(0);
         return Ok(ExportResult {
             path: written.display().to_string(),
             bytes,

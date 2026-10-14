@@ -11,7 +11,10 @@ use std::time::{Duration, Instant};
 use serde::Serialize;
 use tauri::{AppHandle, Emitter, Manager, State};
 use tokio::io::{AsyncBufReadExt, BufReader};
-use tokio::process::{Child, Command};
+use tokio::process::Child;
+// Only the Windows teardown path shells out; the Unix path signals directly.
+#[cfg(target_os = "windows")]
+use tokio::process::Command;
 use tokio::sync::Mutex;
 
 use crate::binary;
@@ -141,7 +144,10 @@ impl ServerManager {
             return Err(message);
         }
 
-        let executable = match binary::resolve(binary_override.as_deref(), None) {
+        let executable = match binary::resolve(
+            binary_override.as_deref(),
+            &[project.join("node_modules").join(".bin")],
+        ) {
             Ok(path) => path,
             Err(err) => {
                 let message = describe_binary_error(&err);
@@ -172,7 +178,8 @@ impl ServerManager {
                     // the child is spawned with `kill_on_drop`.
                     let ready = info.clone();
                     *self.inner.lock().await = Some(Running { info, child });
-                    self.set_status(app, ServerStatus::Ready(ready.clone())).await;
+                    self.set_status(app, ServerStatus::Ready(ready.clone()))
+                        .await;
                     return Ok(ready);
                 }
                 Err(err) => {
@@ -198,13 +205,13 @@ impl ServerManager {
     async fn spawn_and_wait(
         &self,
         app: &AppHandle,
-        executable: &Path,
+        executable: &binary::Resolved,
         project: &Path,
         port: u16,
     ) -> Result<(ServerInfo, Child), String> {
-        let mut command = Command::new(executable);
+        let args = build_args(port);
+        let mut command = binary::command_for(executable, &args);
         command
-            .args(build_args(port))
             .current_dir(project)
             .env("OPENCODE_DISABLE_AUTOUPDATE", "1")
             .kill_on_drop(true)
@@ -214,7 +221,7 @@ impl ServerManager {
 
         let mut child = command
             .spawn()
-            .map_err(|e| format!("failed to launch {}: {e}", executable.display()))?;
+            .map_err(|e| format!("failed to launch {}: {e}", executable.path.display()))?;
 
         // Drain both pipes immediately. A full pipe buffer would otherwise block
         // the server forever, which presents to the user as "Halyard hangs on
@@ -357,9 +364,13 @@ where
 
 fn describe_binary_error(err: &binary::BinaryError) -> String {
     match err {
-        binary::BinaryError::NotFound => {
-            "opencode was not found on PATH. Install it, or set a custom binary path in Settings."
-                .to_string()
+        binary::BinaryError::NotFound { .. } => {
+            // The searched list comes from `BinaryError`, which knows where it
+            // looked; naming those directories turns "not found" into an
+            // answerable question instead of a shrug.
+            format!(
+                "{err}. Halyard was launched from the desktop, so it does not see the PATH from a terminal — if opencode is installed, set its full path in Settings."
+            )
         }
         other => other.to_string(),
     }
@@ -465,7 +476,9 @@ mod tests {
 
     #[test]
     fn missing_binary_error_points_at_settings() {
-        let message = describe_binary_error(&binary::BinaryError::NotFound);
+        let message = describe_binary_error(&binary::BinaryError::NotFound {
+            searched: Vec::new(),
+        });
         assert!(message.contains("Settings"));
     }
 
