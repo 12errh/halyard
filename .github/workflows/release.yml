@@ -70,12 +70,10 @@ jobs:
       - run: pnpm install --frozen-lockfile
       - run: pnpm typecheck
       - run: pnpm vitest run
-      # The release job depends on this script producing a correct manifest, so
-      # its tests run on every push rather than only when a tag lands.
-      - name: Script tests
-        run: |
-          python3 scripts/test_build_update_manifest.py
-          cargo test --manifest-path src-tauri/Cargo.toml --test updater_signing
+      # Pure Python, no system dependencies. The Rust half of this check needs
+      # Tauri's Linux libraries and lives in the linux job, which installs them.
+      - name: Manifest script tests
+        run: pnpm test:scripts
       # The artifacts the desktop builds package. Built once, uploaded, and
       # downloaded by both platform jobs, so Linux and Windows ship byte-equal
       # frontend code.
@@ -119,11 +117,18 @@ jobs:
           name: frontend-dist
           path: dist
 
+      - name: Verify the signing key before signing anything
+        # Runs here rather than in the frontend job because this is the first
+        # job with Tauri's system libraries. Every artifact below is signed with
+        # that key, so discovering it was wrong after the build would waste the
+        # whole run -- and a wrong key ships updates nobody can install.
+        run: cargo test --manifest-path src-tauri/Cargo.toml --test updater_signing
+
       - name: Build bundles
         # `tauri build` signs the AppImage because it is the only Linux format
         # the updater can install over itself. `.deb` and `.rpm` are published
-        # unsigned-by-design: they are updated through the package manager,
-        # which has its own trust chain and needs root to write /usr.
+        # for people who update through the package manager, which has its own
+        # trust chain and needs root to write /usr.
         env:
           TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
           TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
