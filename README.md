@@ -83,6 +83,26 @@ The rule that shapes most of `src/lib/opencode/`: streaming correctness is
 derived as a pure function of `(state, event)` with no I/O and no React, so it
 can be tested exhaustively instead of watched.
 
+## Updates
+
+AppImage and NSIS installs update themselves: the release is downloaded,
+verified against a signing key compiled into the app, installed, and Halyard
+relaunches. Windows installs per-user, so an update never asks for
+administrator rights.
+
+`.deb` and `.rpm` cannot do that — replacing a system package means writing to
+`/usr`, which needs root. Those installs update through the package manager,
+which asks for your password the way you expect. Halyard detects which kind it
+is and says so rather than offering a control that would fail.
+
+```sh
+# In Settings → General → Check for updates
+```
+
+Releases are built by pushing a `v*` tag. See
+[docs/releases.md](docs/releases.md) for the signing setup, the per-platform
+matrix, and how to verify a manifest by hand.
+
 ## Platforms
 
 Linux and Windows. The server is terminated with SIGTERM on Unix and

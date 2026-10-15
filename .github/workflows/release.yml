@@ -1,0 +1,249 @@
+name: Release
+
+# A tag is the release trigger. `v1.2.3` and `v1.2.3-rc.1` both work; the
+# leading `v` is stripped when comparing against the version in
+# tauri.conf.json, so the two must not drift apart.
+on:
+  push:
+    tags: ["v*"]
+  # Manual run, for re-publishing a tag after a transient failure. Same inputs,
+  # so it produces the same artifacts rather than a second, different build.
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: "Tag to build and publish, e.g. v0.1.0"
+        required: true
+
+permissions:
+  contents: write # create the GitHub Release and upload assets
+
+concurrency:
+  # One release per tag. Never cancel: a cancelled build leaves the tag
+  # pointing at a release with no artifacts.
+  group: release-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  # The version in tauri.conf.json has to match the tag, or the updater will
+  # publish a manifest announcing a version the app does not report itself as.
+  verify:
+    name: Verify tag matches version
+    runs-on: ubuntu-latest
+    outputs:
+      version: ${{ steps.check.outputs.version }}
+      # Resolved here rather than read from `github.ref_name` downstream: on a
+      # manual run the ref is the *branch*, and publishing to that would put
+      # every artifact on a tag nobody cut a release for.
+      tag: ${{ steps.check.outputs.tag }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - id: check
+        name: Compare
+        run: |
+          set -euo pipefail
+          TAG="$GITHUB_REF_NAME"
+          if [ "$GITHUB_EVENT_NAME" = "workflow_dispatch" ]; then
+            TAG="${{ inputs.tag }}"
+            git fetch --tags --force
+            git checkout "$TAG"
+          fi
+          VERSION=$(python3 -c "import json;print(json.load(open('src-tauri/tauri.conf.json'))['version'])")
+          echo "tag=$TAG version=$VERSION"
+          if [ "$TAG" != "v$VERSION" ]; then
+            echo "::error::Tag $TAG does not match tauri.conf.json version $VERSION"
+            exit 1
+          fi
+          echo "version=$VERSION" >> "$GITHUB_OUTPUT"
+          echo "tag=$TAG" >> "$GITHUB_OUTPUT"
+
+  frontend:
+    name: Frontend build
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: pnpm/action-setup@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: pnpm
+      - run: pnpm install --frozen-lockfile
+      - run: pnpm typecheck
+      - run: pnpm vitest run
+      # The release job depends on this script producing a correct manifest, so
+      # its tests run on every push rather than only when a tag lands.
+      - name: Script tests
+        run: |
+          python3 scripts/test_build_update_manifest.py
+          cargo test --manifest-path src-tauri/Cargo.toml --test updater_signing
+      # The artifacts the desktop builds package. Built once, uploaded, and
+      # downloaded by both platform jobs, so Linux and Windows ship byte-equal
+      # frontend code.
+      - name: Build frontend
+        run: pnpm vite build
+      - uses: actions/upload-artifact@v4
+        with:
+          name: frontend-dist
+          path: dist
+          retention-days: 1
+
+  linux:
+    name: Linux (AppImage + deb + rpm)
+    needs: [verify, frontend]
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: rustfmt, clippy
+
+      - name: Install system dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y \
+            libwebkit2gtk-4.1-dev \
+            libappindicator3-dev \
+            librsvg2-dev \
+            patchelf \
+            libfuse2 \
+            file
+
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: src-tauri
+          key: release-linux
+
+      - uses: actions/download-artifact@v4
+        with:
+          name: frontend-dist
+          path: dist
+
+      - name: Build bundles
+        # `tauri build` signs the AppImage because it is the only Linux format
+        # the updater can install over itself. `.deb` and `.rpm` are published
+        # unsigned-by-design: they are updated through the package manager,
+        # which has its own trust chain and needs root to write /usr.
+        env:
+          TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
+          TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
+        run: pnpm tauri build --bundles deb,rpm,appimage
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: linux-bundles
+          path: src-tauri/target/release/bundle/
+          retention-days: 1
+
+  windows:
+    name: Windows (NSIS + MSI)
+    needs: [verify, frontend]
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: dtolnay/rust-toolchain@stable
+
+      - uses: pnpm/action-setup@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: pnpm
+
+      - run: pnpm install --frozen-lockfile
+
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: src-tauri
+          key: release-windows
+
+      - uses: actions/download-artifact@v4
+        with:
+          name: frontend-dist
+          path: dist
+
+      - name: Build bundles
+        # NSIS is the format the updater installs over. The bundle is built
+        # `installMode: currentUser`, so installing an update never asks for
+        # administrator rights. MSI is published alongside for organisations
+        # that deploy through the Windows Installer.
+        env:
+          TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
+          TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
+        run: pnpm tauri build --bundles nsis,msi
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: windows-bundles
+          path: src-tauri/target/release/bundle/
+          retention-days: 1
+
+  publish:
+    name: Publish release
+    needs: [linux, windows]
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/download-artifact@v4
+        with:
+          name: linux-bundles
+          path: bundles/linux
+      - uses: actions/download-artifact@v4
+        with:
+          name: windows-bundles
+          path: bundles/windows
+
+      - name: Assemble the update manifest
+        # `tauri build` signs each artifact and writes no manifest, so this is
+        # where `latest.json` is produced. Only the AppImage and the NSIS
+        # installer go in: the updater's Linux path swaps the running executable
+        # and Windows runs the installer, so a `.deb` listed here would be
+        # downloaded and then fail. `.deb`, `.rpm` and `.msi` are still
+        # published as release downloads.
+        run: |
+          set -euo pipefail
+          python3 scripts/build_update_manifest.py bundles \
+            --tag "${{ needs.verify.outputs.tag }}" \
+            --version "${{ needs.verify.outputs.version }}" \
+            --out latest.json
+
+      - name: Verify the manifest names this version
+        run: |
+          set -euo pipefail
+          VERSION="${{ needs.verify.outputs.version }}"
+          python3 - "$VERSION" <<'PY'
+          import json, sys
+          expected = sys.argv[1]
+          manifest = json.load(open("latest.json"))
+          platforms = manifest["platforms"]
+          found = {v["version"] for p in platforms.values() for v in p.values()}
+          print("manifest platforms:", ", ".join(sorted(platforms)))
+          print("manifest versions:", sorted(found))
+          if found != {expected}:
+              raise SystemExit(f"::error::manifest announces {found}, expected {{{expected}}}")
+          if not platforms:
+              raise SystemExit("::error::manifest lists no platforms")
+          PY
+
+      - name: Create the release
+        uses: softprops/action-gh-release@v2
+        with:
+          name: Halyard ${{ needs.verify.outputs.version }}
+          tag_name: ${{ needs.verify.outputs.tag }}
+          # Draft on purpose. The updater endpoint serves
+          # `/releases/latest/download/latest.json`, which does not resolve for
+          # a draft, so publishing the draft is the switch that turns updates on
+          # for everyone. It also means a half-built release is never visible.
+          generate_release_notes: true
+          draft: true
+          files: |
+            latest.json
+            bundles/linux/*.deb
+            bundles/linux/*.rpm
+            bundles/linux/*.AppImage
+            bundles/linux/*.AppImage.sig
+            bundles/windows/*.exe
+            bundles/windows/*.msi
+            bundles/windows/*.exe.sig
