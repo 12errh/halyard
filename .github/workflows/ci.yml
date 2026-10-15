@@ -36,6 +36,12 @@ jobs:
       - name: Test
         run: pnpm vitest run
 
+      # The release job depends on this producing a correct manifest, and the
+      # release job only runs when a tag lands. Running it on every push means a
+      # broken manifest is caught long before a release needs it.
+      - name: Script tests
+        run: pnpm test:scripts
+
       - name: Build
         run: pnpm vite build
 
