@@ -18,7 +18,7 @@
     "typecheck": "tsc -p tsconfig.json --noEmit && tsc -p tsconfig.node.json --noEmit",
     "test:rust": "cargo test --manifest-path src-tauri/Cargo.toml",
     "smoke": "vitest run src/components/shell/app-shell.test.tsx src/test/store-selectors.test.ts",
-    "test:scripts": "python3 scripts/test_build_update_manifest.py",
+    "test:scripts": "python3 scripts/test_build_update_manifest.py && python3 scripts/test_bundle_targets.py",
     "verify": "pnpm typecheck && pnpm vitest run && pnpm test:scripts && pnpm test:rust && vite build",
     "lint": "pnpm typecheck"
   },
