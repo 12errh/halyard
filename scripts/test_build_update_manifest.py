@@ -192,6 +192,30 @@ class Manifest(unittest.TestCase):
             manifest = build(root, "v0.2.0", "0.2.0")
         self.assertIn("platforms", json.loads(json.dumps(manifest)))
 
+    def test_an_empty_tag_is_refused(self):
+        # The first beta release shipped `"version": ""` and a URL containing
+        # `//`, because the publish job did not depend on the job producing
+        # them and GitHub resolved the missing output to an empty string. The
+        # version check then compared empty against empty and passed, so
+        # nothing caught it. An empty tag is always a wiring mistake.
+        with bundles_with(APPIMAGE) as root:
+            with self.assertRaises(ManifestError) as caught:
+                build(root, "", "0.2.0")
+            self.assertIn("tag is empty", str(caught.exception))
+
+    def test_an_empty_version_is_refused(self):
+        with bundles_with(APPIMAGE) as root:
+            with self.assertRaises(ManifestError) as caught:
+                build(root, "v0.2.0", "")
+            self.assertIn("version is empty", str(caught.exception))
+
+    def test_whitespace_is_not_a_value_either(self):
+        with bundles_with(APPIMAGE) as root:
+            with self.assertRaises(ManifestError):
+                build(root, "   ", "0.2.0")
+            with self.assertRaises(ManifestError):
+                build(root, "v0.2.0", "  ")
+
     def test_a_linux_only_run_still_produces_a_usable_manifest(self):
         # One platform failing should not stop the other from publishing.
         with bundles_with(APPIMAGE) as root:

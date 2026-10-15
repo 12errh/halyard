@@ -206,7 +206,11 @@ jobs:
 
   publish:
     name: Publish release
-    needs: [linux, windows]
+    # `verify` is a real dependency, not just a transitive one. Its outputs are
+    # where the tag and version come from, and a job that does not declare a
+    # `needs` gets an empty string for them rather than an error -- which is
+    # how the first beta published `"version": ""` and a URL with `//` in it.
+    needs: [verify, linux, windows]
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -261,14 +265,69 @@ jobs:
           # `/releases/latest/download/latest.json`, which does not resolve for
           # a draft, so publishing the draft is the switch that turns updates on
           # for everyone. It also means a half-built release is never visible.
+          # Prereleases are marked as such on GitHub rather than shipped as a
+          # plain release, so the tag list reads honestly and GitHub's
+          # "latest release" semantics stay correct once 0.1.0 ships.
+          prerelease: ${{ contains(needs.verify.outputs.tag, '-') }}
           generate_release_notes: true
           draft: true
+          # Recursive on purpose. `download-artifact` preserves the structure
+          # the artifact was uploaded with, and each platform uploads
+          # `target/release/bundle/`, so the files arrive as
+          # `bundles/linux/appimage/...`, one level below these paths. A
+          # non-recursive glob matches nothing and silently uploads only
+          # `latest.json` -- a release with no binaries, which is exactly what
+          # the first beta produced.
           files: |
             latest.json
-            bundles/linux/*.deb
-            bundles/linux/*.rpm
-            bundles/linux/*.AppImage
-            bundles/linux/*.AppImage.sig
-            bundles/windows/*.exe
-            bundles/windows/*.msi
-            bundles/windows/*.exe.sig
+            bundles/linux/**/*.deb
+            bundles/linux/**/*.rpm
+            bundles/linux/**/*.AppImage
+            bundles/linux/**/*.sig
+            bundles/windows/**/*.exe
+            bundles/windows/**/*.msi
+            bundles/windows/**/*.sig
+
+      - name: Verify the release carries what the manifest points at
+        # A wrong glob does not fail: it matches nothing, and the release is
+        # created with only `latest.json`. The first beta shipped exactly that
+        # -- a green workflow and a release nobody could install. This checks
+        # the published state rather than trusting the step above.
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG: ${{ needs.verify.outputs.tag }}
+        run: |
+          set -euo pipefail
+          gh release view "$TAG" --json assets --jq '.assets[].name' > /tmp/assets.txt
+          echo "attached:"; sed 's/^/  /' /tmp/assets.txt
+
+          python3 - <<'PY'
+          import json, pathlib, sys, urllib.parse
+
+          tag = __import__("os").environ["TAG"]
+          assets = set(pathlib.Path("/tmp/assets.txt").read_text().split())
+          manifest = json.load(open("latest.json"))
+
+          missing_upload = []
+          for platform, targets in manifest["platforms"].items():
+              for target, entry in targets.items():
+                  name = urllib.parse.unquote(urllib.parse.urlparse(entry["url"]).path.rsplit("/", 1)[-1])
+                  if name not in assets:
+                      missing_upload.append(f"{platform}/{target} -> {name}")
+
+          if not manifest.get("version") or not manifest.get("version").strip():
+              sys.exit("::error::manifest has an empty version")
+          for platform, targets in manifest["platforms"].items():
+              for target, entry in targets.items():
+                  if f"/{tag}/" not in entry["url"]:
+                      sys.exit(f"::error::{platform}/{target} url is not tagged {tag}: {entry['url']}")
+
+          # Every updater-capable platform this release built must be present.
+          if "linux-x86_64" not in manifest["platforms"]:
+              sys.exit("::error::manifest has no linux entry; the AppImage is missing")
+
+          if missing_upload:
+              sys.exit("::error::manifest points at assets that were not uploaded:\n  " + "\n  ".join(missing_upload))
+
+          print(f"manifest {manifest['version']} matches {len(assets)} uploaded assets")
+          PY

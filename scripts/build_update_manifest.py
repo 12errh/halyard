@@ -134,6 +134,16 @@ def build(
     notes: str = "",
     pub_date: str | None = None,
 ) -> dict[str, Any]:
+    # These reach the manifest from the workflow, where a missing `needs`
+    # resolves to an empty string rather than an error. The first beta release
+    # shipped a manifest with `"version": ""` and a URL containing `//`,
+    # because `publish` did not depend on the job that produces these values.
+    # An empty value here is always a wiring mistake, never an intention.
+    if not tag.strip():
+        raise ManifestError("the release tag is empty; the workflow did not pass one")
+    if not version.strip():
+        raise ManifestError("the version is empty; the workflow did not pass one")
+
     manifest: dict[str, Any] = {
         "version": version,
         "notes": notes,
