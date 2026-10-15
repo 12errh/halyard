@@ -7,6 +7,7 @@ pub mod probe;
 pub mod server;
 pub mod settings;
 pub mod transfer;
+pub mod update;
 pub mod tray;
 
 use std::sync::Arc;
@@ -28,6 +29,11 @@ pub fn run() {
         .plugin(tauri_plugin_dialog::init())
         .plugin(tauri_plugin_fs::init())
         .plugin(tauri_plugin_notification::init())
+        // The updater is registered even where it cannot be used — a `.deb`
+        // install has no self-update path, but the plugin still owns the
+        // signed-manifest format, and having it present keeps the capability
+        // set identical across packaging formats.
+        .plugin(tauri_plugin_updater::Builder::new().build())
         .plugin(tauri_plugin_autostart::init(
             tauri_plugin_autostart::MacosLauncher::LaunchAgent,
             None,
@@ -78,6 +84,9 @@ pub fn run() {
             settings::forget_project,
             attention::set_attention_command,
             tray::set_tray_visible,
+            update::check_for_update,
+            update::install_update,
+            update::update_support,
         ])
         .build(tauri::generate_context!())
         .expect("failed to build Halyard")

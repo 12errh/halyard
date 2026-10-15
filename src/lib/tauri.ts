@@ -81,6 +81,59 @@ export const api = {
   forgetProject: (project: string) => invoke<Settings>("forget_project", { project }),
 };
 
+/** A newer release, or `null` when there is nothing to install. */
+export interface UpdateSummary {
+  version: string;
+  currentVersion: string;
+  notes: string | null;
+  date: string | null;
+}
+
+export interface UpdateProgress {
+  downloaded: number;
+  total: number | null;
+}
+
+export const EVENT_UPDATE_PROGRESS = "halyard://update-progress";
+
+/**
+ * Check for a newer release.
+ *
+ * Resolves to `null` both when the app is current and when this install cannot
+ * update itself — a `.deb` has no self-update path, because replacing a system
+ * package means writing to `/usr`, which only root can do. `updateSupport()`
+ * is what tells the two apart, so the UI can explain rather than sit silent.
+ */
+export const checkForUpdate = () => invoke<UpdateSummary | null>("check_for_update");
+
+/**
+ * Whether this install can replace itself, and why not if it cannot.
+ *
+ * `checkForUpdate` answering `null` is ambiguous on its own — up to date, or
+ * unable to update. This is what disambiguates it.
+ */
+export interface UpdateSupport {
+  canSelfUpdate: boolean;
+  reason: string | null;
+  currentVersion: string;
+}
+
+export const updateSupport = () => invoke<UpdateSupport>("update_support");
+
+/**
+ * Download, verify, install, and relaunch.
+ *
+ * The signature is checked against the key compiled into the app, so this
+ * refuses rather than installs anything tampered with in transit.
+ */
+export const installUpdate = () => invoke<void>("install_update");
+
+export function onUpdateProgress(
+  handler: (progress: UpdateProgress) => void,
+): Promise<UnlistenFn> {
+  return listen<UpdateProgress>(EVENT_UPDATE_PROGRESS, (event) => handler(event.payload));
+}
+
 export function onServerStatus(
   handler: (status: ServerStatus) => void,
 ): Promise<UnlistenFn> {

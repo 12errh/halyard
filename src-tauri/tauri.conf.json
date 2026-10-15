@@ -46,6 +46,7 @@
   },
   "bundle": {
     "active": true,
+    "createUpdaterArtifacts": true,
     "targets": [
       "appimage",
       "deb",
@@ -73,6 +74,17 @@
     "linux": {
       "deb": {
         "depends": ["libwebkit2gtk-4.1-0", "libgtk-3-0"]
+      }
+    }
+  },
+  "plugins": {
+    "updater": {
+      "endpoints": [
+        "https://github.com/12errh/halyard/releases/latest/download/latest.json"
+      ],
+      "pubkey": "dW50cnVzdGVkIGNvbW1lbnQ6IG1pbmlzaWduIHB1YmxpYyBrZXk6IENFNDlGMEMyQUY5MkE2OTQKUldTVXBwS3Z3dkJKem43dCtyOHNPdGgzaFljS2hvL1RIb29zbnloaUJ6YW9wUzJ6UUYvWEkydTQK",
+      "windows": {
+        "installMode": "passive"
       }
     }
   }
