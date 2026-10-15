@@ -28,6 +28,7 @@ import { useMode } from "@/state/mode";
 import { useModels } from "@/state/models";
 import { useServer } from "@/state/server";
 import { useUi } from "@/state/ui";
+import { UpdatesSection } from "@/components/shell/updates-section";
 import { useDesktop } from "@/state/desktop";
 import { useTranscript } from "@/state/transcript";
 import { FONT_OPTIONS } from "@/lib/fonts";
@@ -178,6 +179,11 @@ export function AppearanceTab() {
           className="w-full accent-[var(--accent)]"
         />
       </Group>
+
+      {/* Updates sit with the other whole-app concerns rather than at the
+          bottom: it is the setting a user reaches for when something feels
+          wrong, and they should not have to scroll past fonts to find it. */}
+      <UpdatesSection />
 
       <Group label="Motion">
         {/* A Switch rather than a bare checkbox: the same control appears a
