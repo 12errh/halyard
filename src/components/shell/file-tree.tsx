@@ -74,7 +74,7 @@ export function FileTree() {
   );
 
   useEffect(() => {
-    void load(undefined, url ? new OpencodeClient(url) : null);
+    void load(undefined, currentClient());
   }, [load, url]);
 
   const toggle = (node: FileNode) => {
@@ -263,7 +263,8 @@ function codeFile(name: string): boolean {
 /** The client for the server as it is right now, or null if it is not up. */
 function currentClient(): OpencodeClient | null {
   const phase = useServer.getState().phase;
-  return phase.kind === "ready" ? new OpencodeClient(phase.info.url) : null;
+  if (phase.kind !== "ready") return null;
+  return new OpencodeClient(phase.info.url, phase.info.password);
 }
 
 /** The current client, for a lazy expand that cannot wait for a render. */

@@ -9,7 +9,13 @@ import { PermissionCard } from "./permission-card";
 import { QuestionCard } from "./question-card";
 import { isStreaming, orderedParts, type MessageEntry } from "@/lib/opencode/thread";
 import { normaliseDiff, type NormalisedDiff } from "@/lib/diff";
-import type { Part, PermissionReply, PendingPermission, UserMessage } from "@/lib/opencode/types";
+import type {
+  Form,
+  Part,
+  PermissionReply,
+  PendingPermission,
+  UserMessage,
+} from "@/lib/opencode/types";
 import type { PendingQuestion } from "@/state/questions";
 import { useTranscript } from "@/state/transcript";
 import { cn } from "@/lib/utils";
@@ -35,8 +41,8 @@ export function MessageThread({
   model?: string;
   permissions?: PendingPermission[];
   onPermissionReply?(permission: PendingPermission, reply: PermissionReply): Promise<void>;
-  questions?: PendingQuestion[];
-  onQuestionAnswer?(pending: PendingQuestion, answers: string[][]): Promise<void>;
+  questions?: Array<{ pending: PendingQuestion; fields: Form.Field[] }>;
+  onQuestionAnswer?(pending: PendingQuestion, answer: Form.Answer): Promise<void>;
   onQuestionSkip?(pending: PendingQuestion): Promise<void>;
   diffs?: NormalisedDiff[];
   onEditAndResend?(messageID: string, text: string): Promise<void>;
@@ -91,11 +97,12 @@ export function MessageThread({
         {/* Questions wait above permissions: the agent cannot proceed until one
             is answered, so it should be the first thing read. */}
         <AnimatePresence>
-          {questions.map((pending) => (
+          {questions.map(({ pending, fields }) => (
             <QuestionCard
               key={pending.id}
               pending={pending}
-              onSubmit={(answers) => onQuestionAnswer?.(pending, answers) ?? Promise.resolve()}
+              fields={fields}
+              onSubmit={(answer) => onQuestionAnswer?.(pending, answer) ?? Promise.resolve()}
               onReject={() => onQuestionSkip?.(pending) ?? Promise.resolve()}
             />
           ))}

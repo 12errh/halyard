@@ -1,60 +1,114 @@
 import { describe, expect, it, vi } from "vitest";
 import { render, screen, waitFor } from "@testing-library/react";
+import userEvent from "@testing-library/user-event";
 import { ModelsTab, ProvidersTab, McpTab, AgentsTab } from "@/components/shell/settings-tabs";
 import { useSystem } from "@/state/system";
-import { stripSecrets, parseCatalogue } from "@/lib/opencode/models";
+import { parseCatalogue } from "@/lib/opencode/models";
+import type { OpencodeClient } from "@/lib/opencode/client";
+import type {
+  CredentialEntry,
+  IntegrationInfo,
+  ModelInfo,
+  ProviderInfo,
+} from "@/lib/opencode/types";
 
-const PROVIDERS = {
-  all: [
-    {
-      id: "opencode",
-      name: "opencode",
-      models: {
-        "exo-free": { id: "exo-free", name: "Exo Free", cost: { input: 0, output: 0 }, limit: { context: 1048576 } },
-        "paid": { id: "paid", name: "Paid", cost: { input: 3, output: 15 }, limit: { context: 128000 } },
-      },
-    },
-    { id: "anthropic", name: "Anthropic", models: { sonnet: { id: "sonnet", name: "Sonnet" } } },
-    { id: "moonshot", name: "Moonshot", models: { kimi: { id: "kimi", name: "Kimi" } } },
-  ],
-  connected: ["opencode"],
-  default: { opencode: "exo-free" },
-};
+const PROVIDERS: ProviderInfo[] = [
+  { id: "opencode", name: "opencode", models: {}, activation: "enabled" },
+  { id: "anthropic", name: "Anthropic", models: {}, activation: "disabled" },
+  { id: "moonshot", name: "Moonshot", models: {}, activation: "disabled" },
+];
+
+const MODELS: ModelInfo[] = [
+  {
+    id: "exo-free",
+    modelID: "exo-free",
+    providerID: "opencode",
+    name: "Exo Free",
+    cost: { input: 0, output: 0 },
+    limit: { context: 1048576 },
+  },
+  {
+    id: "paid",
+    modelID: "paid",
+    providerID: "opencode",
+    name: "Paid",
+    cost: { input: 3, output: 15 },
+    limit: { context: 128000 },
+  },
+  { id: "sonnet", modelID: "sonnet", providerID: "anthropic", name: "Sonnet" },
+  { id: "kimi", modelID: "kimi", providerID: "moonshot", name: "Kimi" },
+];
+
+const INTEGRATIONS: IntegrationInfo[] = [
+  {
+    id: "anthropic",
+    name: "Anthropic",
+    methods: [
+      { type: "api", id: "key", label: "API key" },
+      { type: "oauth", id: "claude", label: "Claude account" },
+    ],
+    connections: [],
+  },
+];
+
+const CREDENTIALS: CredentialEntry[] = [
+  {
+    id: "cred_1",
+    integrationID: "anthropic",
+    value: { type: "api", key: "sk-supersecret", label: "Work" },
+    active: true,
+    time: { created: 1 },
+  },
+  {
+    id: "cred_2",
+    integrationID: "anthropic",
+    value: { type: "oauth", access: "a", refresh: "r", expires: 0, label: "Personal" },
+    active: false,
+    time: { created: 2 },
+  },
+];
 
 const CLIENT = {
   baseUrl: "http://x",
-  providerCatalogue: vi.fn().mockResolvedValue(PROVIDERS),
-  authMethods: vi.fn().mockResolvedValue({
-    anthropic: [{ type: "api", label: "API key" }, { type: "oauth", label: "Claude account" }],
-  }),
-  mcpStatus: vi.fn().mockResolvedValue({ github: { status: "connected" } }),
-  lspStatus: vi.fn().mockResolvedValue([]),
-  formatterStatus: vi.fn().mockResolvedValue([]),
+  providers: vi.fn().mockResolvedValue(PROVIDERS),
+  models: vi.fn().mockResolvedValue(MODELS),
+  mcpStatus: vi.fn().mockResolvedValue([{ name: "github", status: { status: "connected" } }]),
   agents: vi.fn().mockResolvedValue([
     { name: "build", mode: "primary", description: "default" },
     { name: "plan", mode: "primary", description: "plan mode" },
     { name: "explore", mode: "subagent", description: "explores code" },
   ]),
-  setAuth: vi.fn().mockResolvedValue(true),
-  removeAuth: vi.fn().mockResolvedValue(true),
-  addMcp: vi.fn().mockResolvedValue({}),
-} as never;
+  integrations: vi.fn().mockResolvedValue(INTEGRATIONS),
+  credentials: vi.fn().mockResolvedValue(CREDENTIALS),
+  connectIntegrationKey: vi.fn().mockResolvedValue(undefined),
+  connectIntegrationOauth: vi.fn().mockResolvedValue({
+    attemptID: "att_1",
+    url: "https://example.com/oauth",
+    instructions: "Approve the request in your browser.",
+    mode: "auto",
+    time: { created: 0, expires: 0 },
+  }),
+  oauthStatus: vi.fn().mockResolvedValue({ status: "pending" }),
+  completeOauth: vi.fn().mockResolvedValue(undefined),
+  createCredential: vi.fn(),
+  activateCredential: vi.fn().mockResolvedValue(undefined),
+  deleteCredential: vi.fn().mockResolvedValue(undefined),
+} as unknown as OpencodeClient;
 
 function seed() {
-  const catalogue = parseCatalogue(stripSecrets(PROVIDERS));
+  const catalogue = parseCatalogue(PROVIDERS, MODELS);
   useSystem.setState({
     providers: catalogue.providers,
     connected: catalogue.connected,
     defaults: catalogue.defaults,
-    mcp: { github: { status: "connected" } },
-    lsp: [],
-    formatters: [],
+    mcp: { github: { name: "github", status: "connected" } },
     agents: [
       { name: "build", mode: "primary", description: "default" },
       { name: "plan", mode: "primary", description: "plan mode" },
       { name: "explore", mode: "subagent", description: "explores code" },
     ],
-    authMethods: { anthropic: [{ type: "api", label: "API key" }, { type: "oauth", label: "Claude account" }] },
+    integrations: INTEGRATIONS,
+    credentials: CREDENTIALS,
     client: CLIENT,
     loading: false,
     error: null,
@@ -114,7 +168,7 @@ describe("providers tab", () => {
     render(<ProvidersTab />);
     // "opencode" also appears in the connected-badge row, hence the list form.
     expect(screen.getAllByText("opencode").length).toBeGreaterThan(0);
-    expect(screen.getByText("Anthropic")).toBeInTheDocument();
+    expect(screen.getAllByText("Anthropic").length).toBeGreaterThan(0);
     // The count is interpolated across text nodes, so match on the row content.
     expect(
       screen.getByText((_, node) => node?.textContent === "opencode · 2 models"),
@@ -122,26 +176,57 @@ describe("providers tab", () => {
   });
 
   it("filters with the search box", async () => {
-    const user = (await import("@testing-library/user-event")).default.setup();
+    const user = userEvent.setup();
     render(<ProvidersTab />);
     await user.type(screen.getByPlaceholderText(/search providers/i), "anthro");
     expect(screen.queryByText("Moonshot")).not.toBeInTheDocument();
-    expect(screen.getByText("Anthropic")).toBeInTheDocument();
+    expect(screen.getAllByText("Anthropic").length).toBeGreaterThan(0);
   });
 
-  it("offers API key and OAuth entry points separately", () => {
+  it("offers the integration's key and OAuth methods", () => {
     render(<ProvidersTab />);
-    // anthropic is not connected and offers both methods.
-    expect(screen.getAllByText("API key").length).toBeGreaterThan(0);
-    expect(screen.getAllByText("OAuth").length).toBeGreaterThan(0);
+    expect(screen.getByRole("button", { name: "API key" })).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Claude account" })).toBeInTheDocument();
   });
 
-  it("offers disconnect for a connected provider", () => {
+  it("connects an integration with a key", async () => {
+    const user = userEvent.setup();
     render(<ProvidersTab />);
-    expect(screen.getAllByText("Disconnect").length).toBeGreaterThan(0);
+    await user.click(screen.getByRole("button", { name: "API key" }));
+    await user.type(screen.getByPlaceholderText(/paste the key/i), "abc123");
+    await user.click(screen.getByRole("button", { name: /^connect$/i }));
+    await waitFor(() =>
+      expect(CLIENT.connectIntegrationKey).toHaveBeenCalledWith("anthropic", { key: "abc123" }),
+    );
   });
 
-  it("never renders a provider key", () => {
+  it("starts an OAuth attempt and shows the approval link", async () => {
+    const user = userEvent.setup();
+    render(<ProvidersTab />);
+    await user.click(screen.getByRole("button", { name: "Claude account" }));
+    await user.click(screen.getByRole("button", { name: /start sign-in/i }));
+    await waitFor(() =>
+      expect(CLIENT.connectIntegrationOauth).toHaveBeenCalledWith("anthropic", {
+        methodID: "claude",
+      }),
+    );
+    const link = await screen.findByRole("link", { name: "https://example.com/oauth" });
+    expect(link).toHaveAttribute("href", "https://example.com/oauth");
+    expect(screen.getByText("Approve the request in your browser.")).toBeInTheDocument();
+  });
+
+  it("activates and deletes credentials", async () => {
+    const user = userEvent.setup();
+    render(<ProvidersTab />);
+
+    await user.click(screen.getByRole("button", { name: "Activate credential Personal" }));
+    await waitFor(() => expect(CLIENT.activateCredential).toHaveBeenCalledWith("cred_2"));
+
+    await user.click(screen.getByRole("button", { name: "Delete credential Work" }));
+    await waitFor(() => expect(CLIENT.deleteCredential).toHaveBeenCalledWith("cred_1"));
+  });
+
+  it("never renders a credential value", () => {
     render(<ProvidersTab />);
     expect(document.body.textContent).not.toMatch(/sk-[A-Za-z0-9]/);
   });
@@ -163,7 +248,7 @@ describe("models tab", () => {
   });
 
   it("filters models by search", async () => {
-    const user = (await import("@testing-library/user-event")).default.setup();
+    const user = userEvent.setup();
     render(<ModelsTab />);
     await user.type(screen.getByPlaceholderText(/search models/i), "sonnet");
     expect(screen.queryByText("Exo Free")).not.toBeInTheDocument();
@@ -171,7 +256,7 @@ describe("models tab", () => {
   });
 
   it("filters models by provider", async () => {
-    const user = (await import("@testing-library/user-event")).default.setup();
+    const user = userEvent.setup();
     render(<ModelsTab />);
     await user.selectOptions(screen.getByRole("combobox"), "moonshot");
     expect(screen.getByText("Kimi")).toBeInTheDocument();
@@ -179,7 +264,7 @@ describe("models tab", () => {
   });
 
   it("exposes an add-model form", async () => {
-    const user = (await import("@testing-library/user-event")).default.setup();
+    const user = userEvent.setup();
     render(<ModelsTab />);
     await user.click(screen.getByText(/add a custom model/i));
     expect(screen.getByPlaceholderText("provider id (e.g. myprovider)")).toBeInTheDocument();
@@ -187,7 +272,7 @@ describe("models tab", () => {
   });
 
   it("will not submit an incomplete model form", async () => {
-    const user = (await import("@testing-library/user-event")).default.setup();
+    const user = userEvent.setup();
     render(<ModelsTab />);
     await user.click(screen.getByText(/add a custom model/i));
     const submit = screen.getByRole("button", { name: /save & restart/i });
@@ -198,30 +283,13 @@ describe("models tab", () => {
 describe("agents tab", () => {
   beforeEach(() => seed());
 
-  it("shows the mode switch and subagents", () => {
+  it("surfaces built-in primaries and subagents", () => {
     render(<AgentsTab />);
     expect(screen.getByRole("button", { name: "Build" })).toBeInTheDocument();
-    expect(screen.getByRole("button", { name: "Plan" })).toBeInTheDocument();
     expect(screen.getByText("explore")).toBeInTheDocument();
   });
 
-  it("exposes a create-agent form with the fields it needs", async () => {
-    const user = (await import("@testing-library/user-event")).default.setup();
-    render(<AgentsTab />);
-    await user.click(screen.getByText(/new agent/i));
-    expect(screen.getByPlaceholderText("name (e.g. reviewer)")).toBeInTheDocument();
-    expect(screen.getByPlaceholderText(/system prompt/i)).toBeInTheDocument();
-    expect(screen.getByPlaceholderText(/short description/i)).toBeInTheDocument();
-  });
-
-  it("requires a name and a prompt before saving", async () => {
-    const user = (await import("@testing-library/user-event")).default.setup();
-    render(<AgentsTab />);
-    await user.click(screen.getByText(/new agent/i));
-    expect(screen.getByRole("button", { name: /save & restart/i })).toBeDisabled();
-  });
-
-  it("says plainly when there are no custom agents", () => {
+  it("shows an empty custom-agents section", () => {
     render(<AgentsTab />);
     expect(screen.getByText(/no custom agents yet/i)).toBeInTheDocument();
   });
@@ -237,7 +305,7 @@ describe("mcp tab", () => {
   });
 
   it("offers both remote and local add forms", async () => {
-    const user = (await import("@testing-library/user-event")).default.setup();
+    const user = userEvent.setup();
     render(<McpTab />);
     await user.click(screen.getByRole("button", { name: /add server/i }));
     expect(screen.getByPlaceholderText(/remote url/i)).toBeInTheDocument();
@@ -249,29 +317,21 @@ describe("system store reactivity", () => {
   it("ignores events that do not invalidate anything", () => {
     seed();
     const before = useSystem.getState().providers;
-    useSystem.getState().ingest({ id: "e", type: "message.part.updated", properties: {} } as never);
+    useSystem.getState().ingest({ id: "e", type: "message.updated", data: {} } as never);
     expect(useSystem.getState().providers).toBe(before);
   });
 
-  it("refreshes the catalogue on catalog.updated", async () => {
+  it("refreshes the catalogue on config.updated", async () => {
     seed();
-    (CLIENT as unknown as { providerCatalogue: ReturnType<typeof vi.fn> }).providerCatalogue.mockClear();
-    useSystem.getState().ingest({ id: "e", type: "catalog.updated", properties: {} } as never);
-    await waitFor(() =>
-      expect(
-        (CLIENT as unknown as { providerCatalogue: ReturnType<typeof vi.fn> }).providerCatalogue,
-      ).toHaveBeenCalled(),
-    );
+    vi.mocked(CLIENT.providers).mockClear();
+    useSystem.getState().ingest({ id: "e", type: "config.updated", data: {} } as never);
+    await waitFor(() => expect(CLIENT.providers).toHaveBeenCalled());
   });
 
-  it("refreshes diagnostics on mcp.tools.changed", async () => {
+  it("refreshes diagnostics on mcp.status.changed", async () => {
     seed();
-    (CLIENT as unknown as { mcpStatus: ReturnType<typeof vi.fn> }).mcpStatus.mockClear();
-    useSystem.getState().ingest({ id: "e", type: "mcp.tools.changed", properties: {} } as never);
-    await waitFor(() =>
-      expect(
-        (CLIENT as unknown as { mcpStatus: ReturnType<typeof vi.fn> }).mcpStatus,
-      ).toHaveBeenCalled(),
-    );
+    vi.mocked(CLIENT.mcpStatus).mockClear();
+    useSystem.getState().ingest({ id: "e", type: "mcp.status.changed", data: {} } as never);
+    await waitFor(() => expect(CLIENT.mcpStatus).toHaveBeenCalled());
   });
 });

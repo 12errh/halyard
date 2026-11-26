@@ -103,9 +103,9 @@ async function refreshEffective(): Promise<void> {
   const phase = useServer.getState().phase;
   if (phase.kind !== "ready") return;
   try {
-    const client = new OpencodeClient(phase.info.url);
+    const client = new OpencodeClient(phase.info.url, phase.info.password);
     const config = await client.config();
-    useSettings.setState({ effective: config as Record<string, unknown> });
+    useSettings.setState({ effective: config as unknown as Record<string, unknown> });
   } catch {
     // A missing effective view should not block editing the file.
   }

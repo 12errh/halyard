@@ -16,6 +16,7 @@ use tokio::process::Child;
 #[cfg(target_os = "windows")]
 use tokio::process::Command;
 use tokio::sync::Mutex;
+use uuid::Uuid;
 
 use crate::binary;
 use crate::probe::{self, Health};
@@ -45,13 +46,32 @@ const SPAWN_ATTEMPTS: u8 = 3;
 pub const EVENT_STATUS: &str = "halyard://server-status";
 pub const EVENT_LOG: &str = "halyard://server-log";
 
-#[derive(Debug, Clone, Serialize, PartialEq, Eq)]
+#[derive(Clone, Serialize, PartialEq, Eq)]
 #[serde(rename_all = "camelCase")]
 pub struct ServerInfo {
     pub url: String,
     pub port: u16,
     pub version: String,
     pub project: PathBuf,
+    /// Basic-auth password handed to the child via `OPENCODE_PASSWORD`.
+    ///
+    /// Serialized (camel-cased as `password`) because the webview has to
+    /// authenticate its own requests. Never write it to a log or event.
+    pub password: String,
+}
+
+impl std::fmt::Debug for ServerInfo {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        // A derived `Debug` would print the secret; anything that logs a status
+        // (including `ServerStatus`) goes through this instead.
+        f.debug_struct("ServerInfo")
+            .field("url", &self.url)
+            .field("port", &self.port)
+            .field("version", &self.version)
+            .field("project", &self.project)
+            .field("password", &"<redacted>")
+            .finish()
+    }
 }
 
 /// Lifecycle state as the UI understands it.
@@ -210,9 +230,13 @@ impl ServerManager {
         port: u16,
     ) -> Result<(ServerInfo, Child), String> {
         let args = build_args(port);
+        // A fresh secret per server. opencode then refuses every unauthenticated
+        // request, so nothing else on the machine can drive this instance.
+        let password = Uuid::new_v4().to_string();
         let mut command = binary::command_for(executable, &args);
         command
             .current_dir(project)
+            .env("OPENCODE_PASSWORD", &password)
             .env("OPENCODE_DISABLE_AUTOUPDATE", "1")
             .kill_on_drop(true)
             .stdin(std::process::Stdio::null())
@@ -243,13 +267,14 @@ impl ServerManager {
                 return Err(format!("opencode exited during startup ({status})"));
             }
 
-            match probe::probe_health(port, Duration::from_millis(750)) {
+            match probe::probe_health(port, &password, Duration::from_millis(750)) {
                 Health::Ready { version } => {
                     let info = ServerInfo {
                         url: server_url(port),
                         port,
                         version,
                         project: project.to_path_buf(),
+                        password,
                     };
                     return Ok((info, child));
                 }
@@ -493,5 +518,38 @@ mod tests {
     fn status_discriminants_are_camel_cased_for_the_webview() {
         let json = serde_json::to_string(&ServerStatus::Stopped).unwrap();
         assert_eq!(json, r#"{"status":"stopped"}"#);
+    }
+
+    #[test]
+    fn ready_status_carries_the_password_to_the_webview() {
+        // The frontend must send `Authorization: Basic` on every request, so
+        // the generated secret has to survive serialization.
+        let info = ServerInfo {
+            url: server_url(4096),
+            port: 4096,
+            version: "2.4.2".to_string(),
+            project: PathBuf::from("/tmp/project"),
+            password: "s3cret".to_string(),
+        };
+        let json = serde_json::to_value(ServerStatus::Ready(info)).unwrap();
+        assert_eq!(json["status"], "ready");
+        assert_eq!(json["url"], "http://127.0.0.1:4096");
+        assert_eq!(json["version"], "2.4.2");
+        assert_eq!(json["password"], "s3cret");
+    }
+
+    #[test]
+    fn debug_output_never_contains_the_password() {
+        // Status gets logged on failure paths; the secret must not ride along.
+        let info = ServerInfo {
+            url: server_url(4096),
+            port: 4096,
+            version: "2.4.2".to_string(),
+            project: PathBuf::from("/tmp/project"),
+            password: "s3cret".to_string(),
+        };
+        let rendered = format!("{:?}", ServerStatus::Ready(info));
+        assert!(!rendered.contains("s3cret"), "leaked secret: {rendered}");
+        assert!(rendered.contains("<redacted>"));
     }
 }

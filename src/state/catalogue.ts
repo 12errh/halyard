@@ -13,8 +13,8 @@
 
 import { create } from "zustand";
 import type { OpencodeClient } from "@/lib/opencode/client";
-import { groupResources, type Skill } from "@/lib/resources";
-import type { ServerEvent } from "@/lib/opencode/types";
+import type { Skill } from "@/lib/resources";
+import type { V2Event } from "@/lib/opencode/types";
 
 export interface CommandSuggestion {
   value: string;
@@ -29,11 +29,12 @@ export interface CommandSuggestion {
 
 /** Events after which the catalogue may no longer be complete. */
 const INVALIDATORS = new Set([
-  "catalog.updated",
-  "integration.updated",
-  "plugin.added",
-  "installation.updated",
   "command.updated",
+  "skill.updated",
+  "config.updated",
+  "plugin.updated",
+  "integration.updated",
+  "installation.updated",
 ]);
 
 interface CatalogueStore {
@@ -48,7 +49,7 @@ interface CatalogueStore {
   /** Fetch if not already fetched for this server. Safe to call per keystroke. */
   load(): Promise<void>;
   refresh(): Promise<void>;
-  ingest(event: ServerEvent): void;
+  ingest(event: V2Event): void;
 }
 
 export const useCatalogue = create<CatalogueStore>((set, get) => {
@@ -58,17 +59,27 @@ export const useCatalogue = create<CatalogueStore>((set, get) => {
     // Settled rather than all: a server with skills but no command list is
     // still worth something, and a swallowed failure is how an empty menu came
     // to be read as "this server has three commands".
-    const [rawCommands, rawResources] = await Promise.allSettled([
+    const [rawCommands, rawSkills] = await Promise.allSettled([
       client.commands(),
-      client.resources(),
+      client.skills(),
     ]);
 
     const failed: string[] = [];
     if (rawCommands.status === "rejected") failed.push("commands");
-    if (rawResources.status === "rejected") failed.push("skills");
+    if (rawSkills.status === "rejected") failed.push("skills");
 
-    const skills =
-      rawResources.status === "fulfilled" ? groupResources(rawResources.value).skills : [];
+    // v2 lists skills directly (`/api/skill`) instead of a resource map, so a
+    // skill has no per-file breakdown any more: the server names what it can
+    // load, and that is one row in the picker.
+    const skills: Skill[] =
+      rawSkills.status === "fulfilled"
+        ? rawSkills.value.map((skill) => ({
+            name: skill.name,
+            description: skill.description,
+            files: [],
+            loadable: true,
+          }))
+        : [];
 
     const commands: CommandSuggestion[] =
       rawCommands.status === "fulfilled"

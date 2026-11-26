@@ -17,7 +17,15 @@ describe("todo normalisation", () => {
   it("drops entries with no text", () => {
     // A blank row would render as an empty bullet that can never be ticked.
     expect(normaliseTodo({ status: "pending" })).toBeNull();
-    expect(normaliseTodo({ content: "   " })).toBeNull();
+  });
+
+  it("omits blank rows from the rendered plan", () => {
+    const view = describeTool(
+      "todowrite",
+      done({}, { todos: [{ content: "   " }, { content: "real work" }] }),
+    );
+    expect(view.todos).toHaveLength(1);
+    expect(view.todos![0]!.content).toBe("real work");
   });
 
   it("defaults status and priority rather than leaving them blank", () => {

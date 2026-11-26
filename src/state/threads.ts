@@ -12,10 +12,24 @@ import {
   seedThread,
   type ThreadState,
 } from "@/lib/opencode/thread";
-import { subscribe, type SseHandle } from "@/lib/opencode/sse";
-import type { ServerEvent } from "@/lib/opencode/types";
+import type { SseHandle, SseOptions } from "@/lib/opencode/sse";
+import type { V2Event } from "@/lib/opencode/types";
 
-export type ConnectionState = "idle" | "connecting" | "open" | "error" | "closed";
+export type ConnectionState =
+  | "idle"
+  | "connecting"
+  | "open"
+  | "error"
+  | "unauthorized"
+  | "closed";
+
+/** The slice of `OpencodeClient` the thread store needs to open a stream. */
+export interface EventStream {
+  subscribeEvents(options: Omit<SseOptions, "headers">): SseHandle;
+}
+
+/** Text and reasoning deltas, which arrive far faster than a paint. */
+const DELTA_EVENTS = new Set(["session.text.delta", "session.reasoning.delta"]);
 
 interface ThreadStore {
   threads: Record<string, ThreadState>;
@@ -24,9 +38,16 @@ interface ThreadStore {
   busySessionId: string | null;
   handle: SseHandle | null;
 
-  connect(url: string, alsoHandle?: (event: ServerEvent) => void): void;
+  /**
+   * Subscribe to the event bus.
+   *
+   * Takes the client itself, never a bare URL: only the client knows the
+   * credential the v2 server requires, and a string call site is exactly how
+   * the app ended up opening an unauthenticated stream that 401'd forever.
+   */
+  connect(source: EventStream, alsoHandle?: (event: V2Event) => void): void;
   disconnect(): void;
-  ingest(event: ServerEvent): void;
+  ingest(event: V2Event): void;
   load(sessionId: string, entries: Array<{ info: import("@/lib/opencode/types").MessageInfo; parts: import("@/lib/opencode/types").Part[] }>): void;
   clear(sessionId: string): void;
   /**
@@ -54,8 +75,9 @@ interface ThreadStore {
  */
 type ThreadSlice = Pick<ThreadStore, "threads" | "busySessionId">;
 
-function applyIngest(state: ThreadSlice, event: ServerEvent): ThreadSlice {
-  const sessionID = (event.properties as { sessionID?: string })?.sessionID;
+function applyIngest(state: ThreadSlice, event: V2Event): ThreadSlice {
+  const data = (event.data ?? {}) as { sessionID?: string; status?: { type?: string } };
+  const sessionID = data.sessionID;
   if (!sessionID) return state;
   // Ignore churn from sessions the user never opened.
   if (!(sessionID in state.threads)) return state;
@@ -64,14 +86,25 @@ function applyIngest(state: ThreadSlice, event: ServerEvent): ThreadSlice {
   const next = applyEvent(previous, event);
   if (next === previous) return state;
 
-  const busy =
-    event.type === "session.status" && (event.properties as { status: { type: string } }).status.type === "busy"
-      ? sessionID
-      : event.type === "session.idle"
-        ? state.busySessionId === sessionID
-          ? null
-          : state.busySessionId
-        : state.busySessionId;
+  // v2 has no reliable `session.status` boundary: a turn starts with
+  // `session.execution.started` and ends with one of the terminal execution
+  // events (or `session.idle`). The status event is still honoured when the
+  // server does emit it.
+  const busy = (() => {
+    if (event.type === "session.execution.started") return sessionID;
+    if (
+      event.type === "session.execution.succeeded" ||
+      event.type === "session.execution.failed" ||
+      event.type === "session.execution.interrupted" ||
+      event.type === "session.idle"
+    ) {
+      return state.busySessionId === sessionID ? null : state.busySessionId;
+    }
+    if (event.type === "session.status") {
+      return data.status?.type === "busy" ? sessionID : state.busySessionId;
+    }
+    return state.busySessionId;
+  })();
 
   return {
     threads: { ...state.threads, [sessionID]: next },
@@ -81,7 +114,7 @@ function applyIngest(state: ThreadSlice, event: ServerEvent): ThreadSlice {
 
 export const useThreads = create<ThreadStore>((set, get) => {
   // Deltas waiting for the next frame, and the frame they are waiting on.
-  let buffered: ServerEvent[] = [];
+  let buffered: V2Event[] = [];
   let frame: number | null = null;
 
   const flushPending = () => {
@@ -126,23 +159,24 @@ export const useThreads = create<ThreadStore>((set, get) => {
     busySessionId: null,
     handle: null,
 
-    connect: (url, alsoHandle) => {
+    connect: (source, alsoHandle) => {
       get().disconnect();
-      const handle = subscribe(url, {
+      const options = {
         // The SSE subscription is the single fan-out point for server events.
         // `alsoHandle` lets other stores (permissions) observe the same stream
         // without opening a second connection.
-        onEvent: (event) => {
+        onEvent: (event: V2Event) => {
           get().ingest(event);
           alsoHandle?.(event);
         },
-        onStatus: (status) =>
+        onStatus: (status: ConnectionState) =>
           set((state) => ({
             connection: status,
             // A drop must not leave a stale spinner running forever.
             busySessionId: status === "open" ? state.busySessionId : null,
           })),
-      });
+      };
+      const handle = source.subscribeEvents(options);
       set({ handle });
     },
 
@@ -154,7 +188,7 @@ export const useThreads = create<ThreadStore>((set, get) => {
 
     ingest: (event) => {
       // The high-frequency path: hold the text back until the next frame.
-      if (event.type === "message.part.delta") {
+      if (DELTA_EVENTS.has(event.type)) {
         buffered.push(event);
         schedule();
         return;

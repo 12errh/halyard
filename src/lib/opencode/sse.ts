@@ -2,12 +2,13 @@
  * Server-sent events transport for the opencode event bus.
  *
  * Written against `fetch` + `ReadableStream` rather than `EventSource` so we
- * control reconnection, backoff and teardown, and so a dropped connection
- * surfaces to the UI instead of retrying silently forever.
+ * control reconnection, backoff and teardown, so a dropped connection surfaces
+ * to the UI instead of retrying silently forever, and so we can attach the
+ * Authorization header the v2 server requires (EventSource cannot).
  */
 
 import { httpFetch } from "@/lib/http";
-import type { ServerEvent } from "./types";
+import type { V2Event } from "./types";
 
 export interface SseHandle {
   close(): void;
@@ -15,8 +16,10 @@ export interface SseHandle {
 
 export interface SseOptions {
   /** Called for every decoded event. */
-  onEvent(event: ServerEvent): void;
-  onStatus?(status: "connecting" | "open" | "closed" | "error"): void;
+  onEvent(event: V2Event): void;
+  onStatus?(status: "connecting" | "open" | "closed" | "error" | "unauthorized"): void;
+  /** Extra request headers, e.g. the Authorization built by the client. */
+  headers?: Record<string, string>;
   /** Injected for tests. */
   fetchImpl?: typeof fetch;
   /** Base backoff delay; doubles per consecutive failure. */
@@ -77,7 +80,7 @@ function readData(frame: string): string | null {
 }
 
 /**
- * Subscribe to `GET /event`, reconnecting with exponential backoff.
+ * Subscribe to `GET /api/event`, reconnecting with exponential backoff.
  *
  * The `server.connected` handshake event arrives first and is surfaced to the
  * caller like any other; it is a useful liveness signal for the status bar.
@@ -87,6 +90,10 @@ export function subscribe(url: string, options: SseOptions): SseHandle {
   const doFetch = options.fetchImpl ?? httpFetch;
   const baseDelay = options.retryDelayMs ?? 500;
   const maxDelay = options.maxRetryDelayMs ?? 10_000;
+  const headers: Record<string, string> = {
+    Accept: "text/event-stream",
+    ...options.headers,
+  };
 
   let closed = false;
   let attempt = 0;
@@ -107,9 +114,18 @@ export function subscribe(url: string, options: SseOptions): SseHandle {
 
     try {
       const response = await doFetch(url, {
-        headers: { Accept: "text/event-stream" },
+        headers,
         signal: controller.signal,
       });
+
+      if (response.status === 401 || response.status === 403) {
+        // The credential is wrong, not the network. Retrying replays the same
+        // rejected header forever and floods the console with 401s while
+        // hiding the real cause; stop and let the UI say so.
+        options.onStatus?.("unauthorized");
+        closed = true;
+        return;
+      }
 
       if (!response.ok || !response.body) {
         options.onStatus?.("error");
@@ -159,9 +175,9 @@ export function subscribe(url: string, options: SseOptions): SseHandle {
   };
 }
 
-function dispatch(raw: string, onEvent: (event: ServerEvent) => void) {
+function dispatch(raw: string, onEvent: (event: V2Event) => void) {
   try {
-    const parsed = JSON.parse(raw) as ServerEvent;
+    const parsed = JSON.parse(raw) as V2Event;
     // Guard against a partial frame that happened to parse as something else.
     if (parsed && typeof parsed.type === "string") onEvent(parsed);
   } catch {

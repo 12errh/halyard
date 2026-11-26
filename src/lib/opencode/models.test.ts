@@ -1,7 +1,9 @@
-import { beforeEach, describe, expect, it, vi } from "vitest";
+import { describe, expect, it } from "vitest";
 import {
+  clearModelSelection,
   flattenModels,
   formatContext,
+  hasScopedSelection,
   labelFor,
   parseCatalogue,
   rankModels,
@@ -9,256 +11,290 @@ import {
   stripSecrets,
   usableModels,
   writeModelSelection,
-  type FlatModel,
 } from "@/lib/opencode/models";
-import { useModels } from "@/state/models";
+import type { ModelInfo, ProviderInfo } from "@/lib/opencode/types";
 
-const RAW = {
-  all: [
-    {
-      id: "opencode",
-      name: "opencode",
-      key: "sk-should-never-appear",
-      models: {
-        "mimo-v2.6-flash-free": {
-          id: "mimo-v2.6-flash-free",
-          providerID: "opencode",
-          name: "Mimo v2.6 Flash",
-          cost: { input: 0, output: 0 },
-          limit: { context: 200000, output: 32000 },
-          capabilities: { reasoning: true, input: { text: true, image: true } },
-        },
-        "exo-free": {
-          id: "exo-free",
-          providerID: "opencode",
-          name: "Exo",
-          cost: { input: 0, output: 0 },
-          limit: { context: 1048576 },
-          capabilities: { input: { text: true, image: true } },
-        },
-        "paid-model": {
-          id: "paid-model",
-          providerID: "opencode",
-          name: "Paid",
-          cost: { input: 3, output: 15 },
-          limit: { context: 128000 },
-        },
-      },
-    },
-    {
-      id: "anthropic",
-      name: "Anthropic",
-      key: "sk-ant-should-never-appear",
-      models: {
-        sonnet: {
-          id: "sonnet",
-          providerID: "anthropic",
-          name: "Sonnet",
-          cost: { input: 3, output: 15 },
-          limit: { context: 200000 },
-        },
-      },
-    },
-  ],
-  default: { opencode: "mimo-v2.6-flash-free" },
-  connected: ["opencode"],
-};
+/**
+ * Captured from a real opencode 2.4.2 server. v2 sends activities as
+ * `auto | enabled | disabled`, prices as an array of tiers and input media as
+ * an array of names.
+ */
+const PROVIDERS: ProviderInfo[] = [
+  { id: "anthropic", name: "Anthropic", activation: "enabled" },
+  { id: "opencode", name: "opencode", activation: "auto" },
+  { id: "local", name: "Local", activation: "disabled" },
+  { id: "", name: "Broken" },
+];
 
-describe("stripSecrets", () => {
-  it("removes credential-shaped keys at the top level", () => {
-    expect(stripSecrets({ key: "abc", name: "x" })).toEqual({ name: "x" });
-  });
+const MODELS: ModelInfo[] = [
+  {
+    id: "m1",
+    modelID: "claude-x",
+    providerID: "anthropic",
+    name: "Claude X",
+    family: "claude",
+    cost: [{ input: 3, output: 15, cache: { read: 0.3, write: 3.75 } }],
+    limit: { context: 200_000, output: 8_192 },
+    capabilities: { tools: true, temperature: true, input: ["text", "image"] },
+  },
+  {
+    id: "m2",
+    modelID: "claude-y",
+    providerID: "anthropic",
+    name: "",
+    cost: [
+      { tier: { type: "context", size: 200_000 }, input: 6, output: 22 },
+      { input: 1, output: 2 },
+    ],
+    capabilities: { input: ["text"] },
+  },
+  {
+    id: "m3",
+    modelID: "free-model",
+    providerID: "opencode",
+    name: "Free",
+    cost: [{ input: 0, output: 0, cache: { read: 0, write: 0 } }],
+    limit: { context: 1_048_576 },
+    capabilities: { tools: true, input: ["text"] },
+  },
+  { id: "m4", modelID: "local-z", providerID: "local", name: "Local Z" },
+  {
+    id: "m5",
+    modelID: "orphan",
+    providerID: "missing",
+    name: "Orphan",
+    cost: [{ input: 0, output: 0 }],
+  },
+];
 
-  it("removes them at any depth", () => {
-    const input = { a: { b: { apiKey: "x", keep: 1 } } };
-    expect(stripSecrets(input)).toEqual({ a: { b: { keep: 1 } } });
-  });
+const USABLE_FREE = ["free-model"];
 
-  it("walks arrays", () => {
-    expect(stripSecrets([{ token: "t", id: 1 }])).toEqual([{ id: 1 }]);
-  });
+function catalogue() {
+  return parseCatalogue(PROVIDERS, MODELS);
+}
 
-  it("leaves primitives alone", () => {
-    expect(stripSecrets("x")).toBe("x");
-    expect(stripSecrets(5)).toBe(5);
-  });
-
-  it("removes model headers, which can carry auth", () => {
-    const cleaned = stripSecrets({ models: { m: { headers: { Authorization: "Bearer x" } } } });
-    expect(cleaned).toEqual({ models: { m: {} } });
-  });
-});
+// ---------------------------------------------------------------------------
 
 describe("parseCatalogue", () => {
-  it("keeps providers and models", () => {
-    const catalogue = parseCatalogue(RAW);
-    expect(catalogue.providers.map((p) => p.id)).toEqual(["opencode", "anthropic"]);
-    expect(Object.keys(catalogue.providers[0]!.models)).toHaveLength(3);
-  });
+  it("joins model rows onto their providers", () => {
+    const result = catalogue();
+    expect(result.providers.map((provider) => provider.id)).toEqual([
+      "anthropic",
+      "opencode",
+      "local",
+      "missing",
+    ]);
 
-  it("never carries a provider key into the result", () => {
-    const serialised = JSON.stringify(parseCatalogue(RAW));
-    expect(serialised).not.toContain("should-never-appear");
-  });
-
-  it("falls back to the id when a model has no display name", () => {
-    const catalogue = parseCatalogue({
-      all: [{ id: "p", name: "P", models: { bare: { id: "bare" } } }],
-      connected: ["p"],
+    const anthropic = result.providers[0]!;
+    expect(Object.keys(anthropic.models)).toEqual(["claude-x", "claude-y"]);
+    expect(anthropic.models["claude-x"]).toMatchObject({
+      id: "claude-x",
+      providerID: "anthropic",
+      name: "Claude X",
+      family: "claude",
+      cost: { input: 3, output: 15 },
+      limit: { context: 200_000, output: 8_192 },
+      capabilities: { toolcall: true, input: { text: true, image: true } },
     });
-    expect(catalogue.providers[0]!.models["bare"]!.name).toBe("bare");
   });
 
-  it("falls back to the id when a provider has no name", () => {
-    const catalogue = parseCatalogue({ all: [{ id: "p", models: {} }], connected: [] });
-    expect(catalogue.providers[0]!.name).toBe("p");
+  it("uses the untiered price when the server sends price tiers", () => {
+    expect(catalogue().providers[0]!.models["claude-y"]!.cost).toEqual({ input: 1, output: 2 });
   });
 
-  it("reads the defaults map", () => {
-    expect(parseCatalogue(RAW).defaults).toEqual({ opencode: "mimo-v2.6-flash-free" });
+  it("falls back to the model id when the row has no name", () => {
+    expect(catalogue().providers[0]!.models["claude-y"]!.name).toBe("claude-y");
   });
 
-  it("survives garbage", () => {
-    expect(parseCatalogue(null).providers).toEqual([]);
-    expect(parseCatalogue("nope").providers).toEqual([]);
-    expect(parseCatalogue({ all: [null, 3, {}] }).providers).toEqual([]);
-  });
-});
-
-describe("flattenModels and usableModels", () => {
-  it("flags zero-cost models as free", () => {
-    const flat = flattenModels(parseCatalogue(RAW));
-    expect(flat.find((m) => m.modelID === "mimo-v2.6-flash-free")!.free).toBe(true);
-    expect(flat.find((m) => m.modelID === "paid-model")!.free).toBe(false);
+  it("marks enabled and auto providers as connected but disabled ones not", () => {
+    expect(catalogue().connected).toEqual(["anthropic", "opencode"]);
   });
 
-  it("excludes providers that are not connected", () => {
-    // Offering an unreachable provider only produces a confusing failure later.
-    const usable = usableModels(parseCatalogue(RAW));
-    expect(usable.every((m) => m.providerID === "opencode")).toBe(true);
-    expect(usable).toHaveLength(3);
+  it("treats a provider without an activation field as connected for v1", () => {
+    const result = parseCatalogue(
+      [{ id: "legacy", name: "Legacy" }, { id: "off", name: "Off", activation: "disabled" }],
+      MODELS,
+    );
+    expect(result.connected).toEqual(["legacy"]);
   });
 
-  it("carries context and capabilities through", () => {
-    const model = flattenModels(parseCatalogue(RAW))[0]!;
-    expect(model.context).toBe(200000);
-    expect(model.image).toBe(true);
-    expect(model.reasoning).toBe(true);
+  it("does not invent defaults", () => {
+    expect(catalogue().defaults).toEqual({});
+  });
+
+  it("keeps models whose provider has not appeared in /provider yet", () => {
+    const orphan = catalogue().providers.find((provider) => provider.id === "missing");
+    expect(Object.keys(orphan?.models ?? {})).toEqual(["orphan"]);
+    expect(catalogue().connected).not.toContain("missing");
   });
 });
 
-describe("rankModels", () => {
-  const models: FlatModel[] = flattenModels(parseCatalogue(RAW));
+describe("catalogue views", () => {
+  it("flattens every model and derives cost and capability flags", () => {
+    const flat = flattenModels(catalogue());
+    expect(flat).toHaveLength(5);
 
-  it("puts free models first", () => {
-    const ranked = rankModels(models, "");
-    expect(ranked.filter((m) => m.free).length).toBe(2);
-    expect(ranked[0]!.free).toBe(true);
+    expect(flat.find((model) => model.modelID === "claude-x")).toMatchObject({
+      providerName: "Anthropic",
+      label: "Claude X",
+      free: false,
+      connected: true,
+      image: true,
+      context: 200_000,
+    });
+
+    const free = flat.find((model) => model.modelID === "free-model");
+    expect(free).toMatchObject({ free: true, connected: true, reasoning: false, image: false });
+
+    const orphan = flat.find((model) => model.modelID === "orphan");
+    expect(orphan).toMatchObject({ free: true, connected: false });
   });
 
-  it("prefers image-capable models within the free tier", () => {
-    const free = rankModels(models, "").filter((m) => m.free);
-    expect(free[0]!.image).toBe(true);
+  it("offers only models from connected providers as usable", () => {
+    const usable = usableModels(catalogue()).map((model) => model.modelID);
+    expect(usable).not.toContain("local-z");
+    expect(usable).not.toContain("orphan");
+    expect(usable).toEqual(expect.arrayContaining(USABLE_FREE));
   });
 
-  it("filters on label, id and provider", () => {
-    expect(rankModels(models, "exo").map((m) => m.modelID)).toEqual(["exo-free"]);
-    expect(rankModels(models, "mimo").map((m) => m.modelID)).toEqual(["mimo-v2.6-flash-free"]);
+  it("ranks free, image-capable and reasoning models first", () => {
+    const ranked = rankModels(flattenModels(catalogue()), "");
+    expect(ranked[0]!.modelID).toBe("free-model");
+    const ids = ranked.map((model) => model.modelID);
+    expect(ids.indexOf("claude-x")).toBeLessThan(ids.indexOf("claude-y"));
   });
 
-  it("is case-insensitive", () => {
-    expect(rankModels(models, "MIMO").length).toBe(1);
+  it("filters on the query", () => {
+    expect(rankModels(flattenModels(catalogue()), "local").map((model) => model.modelID)).toEqual([
+      "local-z",
+    ]);
   });
 
-  it("returns nothing for a miss", () => {
-    expect(rankModels(models, "zzzz")).toEqual([]);
-  });
-});
-
-describe("formatContext", () => {
-  it("scales to k and M", () => {
-    expect(formatContext(200000)).toBe("200k");
-    expect(formatContext(1048576)).toBe("1M");
-    expect(formatContext(128000)).toBe("128k");
-  });
-
-  it("is empty for unknown", () => {
+  it("formats context windows compactly", () => {
+    expect(formatContext(1_048_576)).toBe("1M");
+    expect(formatContext(200_000)).toBe("200k");
+    expect(formatContext(512)).toBe("512");
     expect(formatContext(undefined)).toBe("");
   });
 });
 
-describe("selection persistence", () => {
-  beforeEach(() => {
-    localStorage.clear();
-    useModels.getState().reset();
+/**
+ * Regression: `/api/provider` is populated lazily by opencode 2.4.2. If it is
+ * empty when the app boots, the catalogue used to drop every model and the
+ * picker showed "No usable models" for the whole session.
+ */
+describe("v2 lazy provider loading", () => {
+  const LIVE_PROVIDERS: ProviderInfo[] = [
+    { id: "opencode", name: "opencode", activation: "enabled" },
+    { id: "freepi", name: "free-pi (via local proxy)", activation: "enabled" },
+    { id: "agentrouter", name: "AgentRouter", activation: "auto" },
+  ];
+
+  const LIVE_MODELS: ModelInfo[] = [
+    {
+      id: "opencode/seaglass-alpha-free",
+      modelID: "seaglass-alpha-free",
+      providerID: "opencode",
+      name: "Seaglass Alpha Free",
+      cost: [{ input: 0, output: 0, cache: { read: 0, write: 0 } }],
+      limit: { context: 200_000, output: 64_000 },
+      capabilities: { tools: true, temperature: true, input: ["text"] },
+    },
+    {
+      id: "google/gemini-4-neon",
+      modelID: "gemini-4-neon",
+      providerID: "google",
+      name: "Gemini 4 Neon",
+      cost: [{ input: 1.25, output: 10 }],
+      limit: { context: 1_048_576, output: 65_536 },
+      capabilities: { tools: true, input: ["text", "image", "video"] },
+    },
+    {
+      id: "freepi/deepseek-v4.1-flash",
+      modelID: "deepseek-v4.1-flash",
+      providerID: "freepi",
+      name: "DeepSeek v4.1 Flash",
+      limit: { context: 128_000 },
+      capabilities: { tools: true, input: ["text"] },
+    },
+  ];
+
+  it("builds a non-empty catalogue before any provider arrives", () => {
+    const raced = parseCatalogue([], LIVE_MODELS);
+    expect(raced.providers.map((provider) => provider.id)).toEqual(["opencode", "google", "freepi"]);
+    expect(flattenModels(raced)).toHaveLength(LIVE_MODELS.length);
+    expect(raced.connected).toEqual([]);
   });
 
-  it("round-trips through local storage", () => {
-    writeModelSelection({ providerID: "opencode", modelID: "exo-free" });
-    expect(readModelSelection()).toEqual({ providerID: "opencode", modelID: "exo-free" });
-  });
+  it("exposes free models once the providers are loaded", () => {
+    const result = parseCatalogue(LIVE_PROVIDERS, LIVE_MODELS);
+    const usable = usableModels(result).map((model) => model.modelID);
+    expect(usable).toContain("seaglass-alpha-free");
+    expect(usable).toContain("deepseek-v4.1-flash");
 
-  it("ignores a corrupt value", () => {
-    localStorage.setItem("halyard.model", "{not json");
-    expect(readModelSelection()).toBeNull();
-  });
-
-  it("ignores a value missing a half of the pair", () => {
-    localStorage.setItem("halyard.model", JSON.stringify({ providerID: "opencode" }));
-    expect(readModelSelection()).toBeNull();
-  });
-
-  it("labels the current selection", () => {
-    const models = flattenModels(parseCatalogue(RAW));
-    expect(labelFor(models, { providerID: "opencode", modelID: "exo-free" })).toBe("Exo");
-    expect(labelFor(models, { providerID: "x", modelID: "y" })).toBe("y");
-    expect(labelFor(models, null)).toBe("");
+    const free = flattenModels(result)
+      .filter((model) => model.free)
+      .map((model) => model.modelID);
+    expect(free).toEqual(
+      expect.arrayContaining(["seaglass-alpha-free", "deepseek-v4.1-flash"]),
+    );
+    expect(free).not.toContain("gemini-4-neon");
+    expect(flattenModels(result).find((model) => model.modelID === "gemini-4-neon")).toMatchObject({
+      image: true,
+      free: false,
+    });
   });
 });
 
-describe("model store", () => {
-  beforeEach(() => {
-    localStorage.clear();
-    useModels.getState().reset();
+describe("model selection", () => {
+  it("round-trips a scoped selection", () => {
+    writeModelSelection({ providerID: "anthropic", modelID: "claude-x" }, "/repo/a");
+    expect(readModelSelection("/repo/a")).toEqual({
+      providerID: "anthropic",
+      modelID: "claude-x",
+    });
+    expect(hasScopedSelection("/repo/a")).toBe(true);
+
+    clearModelSelection("/repo/a");
+    expect(readModelSelection("/repo/a")).toBeNull();
+    expect(hasScopedSelection("/repo/a")).toBe(false);
   });
 
-  it("loads only connected providers", async () => {
-    useModels.getState().setClient({ providerCatalogue: vi.fn().mockResolvedValue(RAW) });
-    await useModels.getState().load();
-    expect(useModels.getState().models).toHaveLength(3);
-    expect(useModels.getState().loading).toBe(false);
+  it("falls back to the global selection", () => {
+    writeModelSelection({ providerID: "opencode", modelID: "free-model" });
+    try {
+      expect(readModelSelection("/repo/b")).toEqual({
+        providerID: "opencode",
+        modelID: "free-model",
+      });
+    } finally {
+      clearModelSelection();
+    }
   });
 
-  it("drops a remembered selection that is no longer offered", async () => {
-    useModels.getState().select({ providerID: "opencode", modelID: "vanished-model" });
-    useModels.getState().setClient({ providerCatalogue: vi.fn().mockResolvedValue(RAW) });
-    await useModels.getState().load();
-    // Better than sending an id the server will reject at send time.
-    expect(useModels.getState().selection).toBeNull();
+  it("labels a selection from the catalogue, or falls back to the id", () => {
+    const flat = flattenModels(catalogue());
+    expect(labelFor(flat, { providerID: "anthropic", modelID: "claude-x" })).toBe("Claude X");
+    expect(labelFor(flat, { providerID: "anthropic", modelID: "gone" })).toBe("gone");
+    expect(labelFor(flat, null)).toBe("");
   });
+});
 
-  it("keeps a remembered selection that is still offered", async () => {
-    useModels.getState().select({ providerID: "opencode", modelID: "exo-free" });
-    useModels.getState().setClient({ providerCatalogue: vi.fn().mockResolvedValue(RAW) });
-    await useModels.getState().load();
-    expect(useModels.getState().selection).toEqual({
-      providerID: "opencode",
-      modelID: "exo-free",
+describe("stripSecrets", () => {
+  it("removes credential-shaped keys at any depth", () => {
+    const raw = {
+      provider: { id: "anthropic", key: "sk-live", options: { apiKey: "x", token: "y" } },
+      list: [{ secret: "s", name: "keep" }],
+    };
+
+    expect(stripSecrets(raw)).toEqual({
+      provider: { id: "anthropic", options: {} },
+      list: [{ name: "keep" }],
     });
   });
 
-  it("does nothing without a client", async () => {
-    useModels.getState().setClient(null);
-    await useModels.getState().load();
-    expect(useModels.getState().models).toEqual([]);
-  });
-
-  it("surfaces a failure instead of throwing", async () => {
-    useModels
-      .getState()
-      .setClient({ providerCatalogue: vi.fn().mockRejectedValue(new Error("offline")) });
-    await useModels.getState().load();
-    expect(useModels.getState().error).toBe("offline");
-    expect(useModels.getState().loading).toBe(false);
+  it("leaves primitives alone", () => {
+    expect(stripSecrets("plain")).toBe("plain");
+    expect(stripSecrets(7)).toBe(7);
   });
 });

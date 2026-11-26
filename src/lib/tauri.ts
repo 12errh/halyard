@@ -12,6 +12,7 @@ export interface ServerInfo {
   url: string;
   port: number;
   version: string;
+  password: string;
   project: string;
 }
 

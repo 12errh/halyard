@@ -12,7 +12,7 @@ import { TodoPanel } from "@/components/chat/todo-panel";
 import { useSessions } from "@/state/sessions";
 import { useProjects } from "@/state/projects";
 import { useThreads } from "@/state/threads";
-import type { Part, Session, ToolState } from "@/lib/opencode/types";
+import type { Part, Session, Todo, ToolState } from "@/lib/opencode/types";
 import { useSessionOrg } from "@/state/session-org";
 import "./index.css";
 
@@ -88,10 +88,10 @@ const entries = [
   partOrder: (m.parts as Array<{ id: string }>).map((part) => part.id),
 })) as never;
 
-const PLAN = [
-  { content: "Cancel the previous subscription", status: "completed", priority: "high" },
-  { content: "Cap the backoff at 30s", status: "in_progress", priority: "high" },
-  { content: "Add a regression test", status: "pending", priority: "high" },
+const PLAN: Todo[] = [
+  { id: "p1", content: "Cancel the previous subscription", status: "completed", priority: "high" },
+  { id: "p2", content: "Cap the backoff at 30s", status: "in_progress", priority: "high" },
+  { id: "p3", content: "Add a regression test", status: "pending", priority: "high" },
 ];
 
 createRoot(document.getElementById("root")!).render(

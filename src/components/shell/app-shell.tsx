@@ -1,7 +1,7 @@
-import { useCallback, useEffect, useMemo, useRef } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { AnimatePresence, motion } from "motion/react";
 import { open } from "@tauri-apps/plugin-dialog";
-import { FolderOpen } from "lucide-react";
+import { FolderOpen, ShieldAlert } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { CommandPalette, type Command } from "@/components/command/command-palette";
 import { Composer, type ComposerSubmit } from "@/components/chat/composer";
@@ -19,9 +19,14 @@ import { EmptyState } from "./empty-state";
 import { Logo } from "@/components/shell/logo";
 import { TodoPanel } from "@/components/chat/todo-panel";
 import { SettingsDialog } from "./settings-dialog";
-import { toFileParts } from "@/lib/attachments";
 import { normaliseDiff } from "@/lib/diff";
 import type { MessageEntry } from "@/lib/opencode/thread";
+import {
+  toMessageEntries,
+  toPendingPermission,
+  toSessionView,
+  type Form,
+} from "@/lib/opencode/types";
 import { useProjects } from "@/state/projects";
 import { useOpencodeClient } from "@/hooks/use-opencode-client";
 import { useDesktop } from "@/state/desktop";
@@ -42,11 +47,10 @@ import { useModels } from "@/state/models";
 import { useMode } from "@/state/mode";
 import { useSystem } from "@/state/system";
 import {
-  normaliseQuestion,
   pendingFor as pendingQuestionsFor,
+  toPendingQuestion,
   useQuestions,
   type PendingQuestion,
-  type Question,
 } from "@/state/questions";
 import type { PermissionReply, PendingPermission, SessionStatus } from "@/lib/opencode/types";
 
@@ -81,13 +85,13 @@ export function AppShell() {
   const stepTab = useSessions((s) => s.stepTab);
   const allStatus = useSessions((s) => s.status);
   const todosBySession = useTodos((s) => s.bySession);
-  const hydrateTodos = useTodos((s) => s.hydrate);
   const plan = todosFor(todosBySession, activeId);
   const pinPlan = useTranscript((s) => s.pinPlan);
   const hydrateDesktop = useDesktop((s) => s.hydrate);
 
   const thread = useThreads((s) => (activeId ? s.threads[activeId] : undefined));
   const busyId = useThreads((s) => s.busySessionId);
+  const connection = useThreads((s) => s.connection);
 
   const permissions = usePermissions((s) => s.bySession);
   const ingestPermission = usePermissions((s) => s.ingest);
@@ -104,29 +108,32 @@ export function AppShell() {
 
   const client = useOpencodeClient();
 
+  /**
+   * Pending forms, kept alongside the store's rendered view.
+   *
+   * `PendingQuestion` deliberately drops the field keys and option values a
+   * reply needs, so the original form is retained here and paired back up by
+   * position when the card answers.
+   */
+  const [forms, setForms] = useState<Record<string, Form.Info>>({});
+  const rememberForm = useCallback((form: Form.Info) => {
+    setForms((prev) => (prev[form.id] ? prev : { ...prev, [form.id]: form }));
+  }, []);
+  const forgetForm = useCallback((id: string) => {
+    setForms((prev) => {
+      if (!(id in prev)) return prev;
+      const next = { ...prev };
+      delete next[id];
+      return next;
+    });
+  }, []);
+
   // --- Bootstrap -----------------------------------------------------------
   useEffect(() => {
     void hydrate();
     void attach();
     preloadHighlighter();
   }, [hydrate, attach]);
-
-  // The plan lives on the server, not only in the transcript: a list written
-  // before this session was opened would otherwise look empty until the agent
-  // happened to write it again.
-  useEffect(() => {
-    if (!client || !activeId) return;
-    let cancelled = false;
-    void client
-      .todos(activeId)
-      .then((raw) => {
-        if (!cancelled) hydrateTodos(activeId, raw);
-      })
-      .catch(() => undefined);
-    return () => {
-      cancelled = true;
-    };
-  }, [client, activeId, hydrateTodos]);
 
   // Branch and file status belong to the project, not the session, so they
   // are reloaded whenever the server is rebound to a different directory.
@@ -165,12 +172,22 @@ export function AppShell() {
     // One subscription fanned out: the thread reducer owns messages, and the
     // session and permission stores need the same events. Without the session
     // store in this path, a title generated after the first turn never lands.
-    connect(client!.eventsUrl(), (event) => {
+    connect(client!, (event) => {
+      const form = (event.data as Record<string, unknown> | undefined)?.form as
+        | Form.Info
+        | undefined;
+      if (event.type === "form.created" && form) rememberForm(form);
+      else if ((event.type === "form.replied" || event.type === "form.cancelled") && form) {
+        forgetForm(form.id);
+      }
       ingestPermission(event);
       ingestSessionEvent(event);
       // Keeps providers, models, agents and MCP status live: connecting a
       // provider or adding a server updates the settings tabs with no reload.
       ingestSystemEvent(event);
+      // The chat picker keeps its own usable-model list; refresh it on the same
+      // provider/model/credential changes that update Settings.
+      useModels.getState().ingest(event);
       // A new plugin or skill lands as an event; the cached command list is
       // stale the moment it does.
       useCatalogue.getState().ingest(event);
@@ -201,13 +218,14 @@ export function AppShell() {
       // without this the sidebar lists every conversation on the machine.
       setDirectory(phase.info.project);
 
-      const [all, statuses] = await Promise.all([
-        client!.listSessions().catch(() => []),
-        client!.status().catch(() => ({})),
+      const [page, statuses] = await Promise.all([
+        client!.listSessions().catch(() => null),
+        client!.active().catch(() => ({})),
       ]);
+      const all = (page?.data ?? []).map(toSessionView);
       setSessions(all);
       for (const [sessionID, status] of Object.entries(statuses)) {
-        if (status.type !== "busy") continue;
+        if (status.type !== "running") continue;
         useThreads.setState({ busySessionId: sessionID });
       }
 
@@ -246,21 +264,24 @@ export function AppShell() {
     if (loadedFor.current.has(activeId)) return;
     loadedFor.current.add(activeId);
     void (async () => {
-      const entries = await client.messages(activeId).catch(() => []);
-      load(activeId, entries);
+      const page = await client.messages(activeId).catch(() => null);
+      load(activeId, page ? toMessageEntries(page.data) : []);
       // Permissions asked before this tab was opened still need showing.
-      const [pending, asked] = await Promise.all([
-        client.listPermissions(activeId).catch(() => []),
-        client.listQuestions(activeId).catch(() => []),
+      const [pending, pendingForms] = await Promise.all([
+        client.permissions(activeId).catch(() => []),
+        client.forms(activeId).catch(() => []),
       ]);
-      if (pending.length > 0) syncPermissions(activeId, pending);
+      if (pending.length > 0) syncPermissions(activeId, pending.map(toPendingPermission));
       // A question asked before this tab was opened still needs answering.
-      const restored = asked
-        .map((row) => toPendingQuestion(row, activeId))
-        .filter((row): row is PendingQuestion => row !== null);
+      const restored: PendingQuestion[] = [];
+      for (const form of pendingForms) {
+        rememberForm(form);
+        const view = toPendingQuestion(form, Date.now());
+        if (view) restored.push(view);
+      }
       if (restored.length > 0) syncQuestions(restored);
     })();
-  }, [activeId, client, load, syncPermissions, syncQuestions]);
+  }, [activeId, client, load, syncPermissions, syncQuestions, rememberForm]);
 
   /**
    * Re-read a thread after the server rewrote it.
@@ -274,9 +295,12 @@ export function AppShell() {
   const refreshThread = useCallback(
     async (sessionID: string) => {
       if (!client) return;
-      const entries = await client.messages(sessionID).catch(() => []);
+      const page = await client.messages(sessionID).catch(() => null);
+      // Failed refetch: keep what is on screen. Clearing first and then loading
+      // an empty page would erase a live transcript over a transient error.
+      if (!page) return;
       clearThread(sessionID);
-      load(sessionID, entries);
+      load(sessionID, toMessageEntries(page.data));
     },
     [client, clearThread, load],
   );
@@ -285,7 +309,9 @@ export function AppShell() {
 
   const send = useCallback(
     async ({ text, attachments }: ComposerSubmit) => {
-      if (!client) return;
+      // Throwing rather than swallowing is what puts the reason in front of
+      // the user; the composer keeps their text when this rejects.
+      if (!client) throw new Error("opencode is not running yet");
       try {
         const chosen = useModels.getState().selection;
         const agent = useMode.getState().value;
@@ -293,38 +319,48 @@ export function AppShell() {
         // first prompt creates the session rather than being swallowed.
         let target = activeId;
         if (!target) {
-          const created = await client.createSession();
+          const created = toSessionView(await client.createSession());
           upsert(created);
           openTab(created.id);
           target = created.id;
         }
+        // Model and agent live on the session in v2; the prompt body is text
+        // and files only. The session must exist before these run, which is
+        // why creation happens first.
+        if (chosen) {
+          await client.setSessionModel(target, {
+            id: chosen.modelID,
+            providerID: chosen.providerID,
+          });
+        }
+        if (agent) await client.setSessionAgent(target, agent);
         await client.sendPrompt(target, {
-          // opencode takes the model per prompt, so a mid-conversation switch
-          // applies to the next turn without forking the thread.
-          ...(chosen ? { model: { providerID: chosen.providerID, modelID: chosen.modelID } } : {}),
-          // Plan/Build are agents; omitting this silently keeps whatever the
-          // session was created with.
-          ...(agent ? { agent } : {}),
-          parts: [
-            ...(text ? [{ type: "text" as const, text }] : []),
-            ...toFileParts(attachments),
-          ],
+          text,
+          files: attachments.map((attachment) => ({
+            url: attachment.dataUrl,
+            mime: attachment.mime,
+            filename: attachment.name,
+          })),
         });
+        // The prompt is durable the moment it is accepted; re-read the thread
+        // so the user's message appears even if the stream event is lost.
+        void refreshThread(target);
       } catch (error) {
         console.error("prompt failed", error);
+        throw error;
       }
     },
-    [client, activeId, upsert, openTab],
+    [client, activeId, upsert, openTab, refreshThread],
   );
 
   const abort = useCallback(() => {
-    if (client && activeId) void client.abort(activeId).catch(() => undefined);
+    if (client && activeId) void client.interrupt(activeId).catch(() => undefined);
   }, [client, activeId]);
 
   const replyPermission = useCallback(
     async (permission: PendingPermission, reply: PermissionReply) => {
       if (!client) throw new Error("not connected to opencode");
-      await client.replyPermission(permission.sessionID, permission, reply);
+      await client.replyPermission(permission.sessionID, permission.id, reply);
       resolvePermission(permission.sessionID, permission.id);
     },
     [client, resolvePermission],
@@ -334,29 +370,33 @@ export function AppShell() {
   const editAndResend = useCallback(
     async (messageID: string, text: string) => {
       if (!client || !activeId) return;
-      await client.revert(activeId, messageID);
-      await client.sendPrompt(activeId, { parts: [{ type: "text", text }] });
+      await client.revertStage(activeId, messageID);
+      await client.revertCommit(activeId);
+      await client.sendPrompt(activeId, { text });
       await refreshThread(activeId);
     },
-    [client, activeId],
+    [client, activeId, refreshThread],
   );
 
   const answerQuestion = useCallback(
-    async (pending: PendingQuestion, answers: string[][]) => {
+    async (pending: PendingQuestion, answer: Form.Answer) => {
       if (!client) throw new Error("not connected to opencode");
-      await client.replyQuestion(pending.sessionID, pending.id, answers, pending.version);
+      await client.replyForm(pending.sessionID, pending.id, answer);
+      forgetForm(pending.id);
       resolveQuestion(pending.sessionID, pending.id);
     },
-    [client, resolveQuestion],
+    [client, resolveQuestion, forgetForm],
   );
 
   const skipQuestion = useCallback(
     async (pending: PendingQuestion) => {
       if (!client) return;
-      await client.rejectQuestion(pending.sessionID, pending.id, pending.version);
+      // An empty answer is how a form is dismissed; there is no cancel route.
+      await client.replyForm(pending.sessionID, pending.id, {});
+      forgetForm(pending.id);
       resolveQuestion(pending.sessionID, pending.id);
     },
-    [client, resolveQuestion],
+    [client, resolveQuestion, forgetForm],
   );
 
   const pickFolder = useCallback(async () => {
@@ -385,7 +425,7 @@ export function AppShell() {
     const last = users[users.length - 1];
     if (!last) return;
     try {
-      await client.revert(activeId, last);
+      await client.revertStage(activeId, last);
     } catch (error) {
       console.error("undo failed", error);
       return;
@@ -395,30 +435,14 @@ export function AppShell() {
 
   const redo = useCallback(async () => {
     if (!client || !activeId) return;
-    await client.unrevert(activeId).catch(() => undefined);
+    await client.revertClear(activeId).catch(() => undefined);
     await refreshThread(activeId);
   }, [client, activeId, refreshThread]);
 
   const compact = useCallback(async () => {
-    // The picker holds the live choice; the session carries whatever it last
-    // used, and failing both, any model that is loaded will do. A summary with
-    // no model is rejected outright, and silently doing nothing reads as a
-    // broken button.
-    const picked = useModels.getState().selection;
-    const fallback = activeSessionInfo?.model;
-    const anyLoaded = useModels.getState().models[0];
-    const model = picked
-      ? { providerID: picked.providerID, modelID: picked.modelID }
-      : fallback
-        ? { providerID: fallback.providerID, modelID: fallback.id }
-        : anyLoaded
-          ? { providerID: anyLoaded.providerID, modelID: anyLoaded.modelID }
-          : null;
-    if (!client || !activeId || !model) return;
-    // The summary is generated, so it needs a model — opencode rejects the
-    // request outright without one.
+    if (!client || !activeId) return;
     try {
-      await client.summarize(activeId, model);
+      await client.compact(activeId);
       // The server rewrites the whole transcript into a summary turn. Without
       // a re-read the old history stays on screen and the summary arrives as
       // an empty bubble.
@@ -426,7 +450,7 @@ export function AppShell() {
     } catch (error) {
       console.error("compact failed", error);
     }
-  }, [client, activeId, activeSessionInfo, refreshThread]);
+  }, [client, activeId, refreshThread]);
 
   // --- @ and / suggestions -------------------------------------------------
 
@@ -491,7 +515,7 @@ export function AppShell() {
 
   const newSession = useCallback(async () => {
     if (!client) return;
-    const session = await client.createSession();
+    const session = toSessionView(await client.createSession());
     upsert(session);
     openTab(session.id);
   }, [client, upsert, openTab]);
@@ -661,7 +685,14 @@ export function AppShell() {
   const busy = busyId !== null && status.type === "busy";
   const activeSession = sessions.find((s) => s.id === activeId);
   const pending = useMemo(() => pendingFor({ bySession: permissions }, activeId), [permissions, activeId]);
-  const askedQuestions = pendingQuestionsFor({ bySession: questionsState }, activeId);
+  const askedQuestions = useMemo(
+    () =>
+      pendingQuestionsFor({ bySession: questionsState }, activeId).map((pending) => ({
+        pending,
+        fields: (forms[pending.id]?.fields ?? []).filter(isAnswerable),
+      })),
+    [questionsState, activeId, forms],
+  );
   const modelList = useModels((s) => s.models);
   const modelSelection = useModels((s) => s.selection);
   const modelsLoading = useModels((s) => s.loading);
@@ -716,6 +747,18 @@ export function AppShell() {
             <ServerFailure message={phase.message} logs={useServer.getState().logs} />
           ) : phase.kind === "ready" ? (
             <>
+              {connection === "unauthorized" && (
+                <div
+                  role="alert"
+                  className="flex items-center gap-2 border-b border-danger/30 bg-danger/10 px-4 py-2 text-[12px] text-danger"
+                >
+                  <ShieldAlert className="size-3.5 shrink-0" />
+                  <span>
+                    opencode rejected the connection credentials. Restart the server to
+                    reconnect.
+                  </span>
+                </div>
+              )}
               <MessageThread
                 entries={entries}
                 live={busy}
@@ -849,23 +892,16 @@ function ServerFailure({ message, logs }: { message: string; logs: Array<{ messa
   );
 }
 
-/** Adapt a raw question row into the UI's single shape, or reject it. */
-function toPendingQuestion(raw: unknown, sessionID: string): PendingQuestion | null {
-  if (!raw || typeof raw !== "object") return null;
-  const record = raw as Record<string, unknown>;
-  const id = typeof record.id === "string" ? record.id : null;
-  if (!id) return null;
-
-  const questions: Question[] = (Array.isArray(record.questions) ? record.questions : [])
-    .map(normaliseQuestion)
-    .filter((question): question is Question => question !== null);
-  if (questions.length === 0) return null;
-
-  return {
-    id,
-    sessionID: typeof record.sessionID === "string" ? record.sessionID : sessionID,
-    questions,
-    version: 2,
-    askedAt: Date.now(),
-  };
+/** The form fields the question card renders, in the same order as the view. */
+function isAnswerable(field: Form.Field): boolean {
+  if (field.hidden) return false;
+  switch (field.type) {
+    case "string":
+      return true;
+    case "enum":
+    case "multiselect":
+      return (field.options?.length ?? 0) > 0;
+    default:
+      return false;
+  }
 }

@@ -9,13 +9,15 @@
 
 import { confirm } from "@tauri-apps/plugin-dialog";
 import { OpencodeClient } from "@/lib/opencode/client";
+import { toSessionView } from "@/lib/opencode/types";
 import { useServer } from "@/state/server";
 import { useSessions } from "@/state/sessions";
 import { useThreads } from "@/state/threads";
 
 function client(): OpencodeClient | null {
   const phase = useServer.getState().phase;
-  return phase.kind === "ready" ? new OpencodeClient(phase.info.url) : null;
+  if (phase.kind !== "ready") return null;
+  return new OpencodeClient(phase.info.url, phase.info.password);
 }
 
 /** Delete is irreversible, so it always confirms first. */
@@ -53,8 +55,9 @@ export async function renameSession(sessionId: string, title: string): Promise<b
   if (!api || !trimmed) return false;
 
   try {
-    const updated = await api.renameSession(sessionId, trimmed);
-    useSessions.getState().upsert(updated);
+    await api.updateSession(sessionId, { title: trimmed });
+    const existing = useSessions.getState().sessions.find((s) => s.id === sessionId);
+    if (existing) useSessions.getState().upsert({ ...existing, title: trimmed });
     return true;
   } catch (error) {
     console.error("rename failed", error);
@@ -66,7 +69,8 @@ export async function createSession(): Promise<string | null> {
   const api = client();
   if (!api) return null;
   try {
-    const session = await api.createSession();
+    const created = await api.createSession();
+    const session = toSessionView(created);
     useSessions.getState().upsert(session);
     useSessions.getState().openTab(session.id);
     return session.id;
@@ -80,7 +84,7 @@ export async function forkSession(sessionId: string): Promise<string | null> {
   const api = client();
   if (!api) return null;
   try {
-    const forked = await api.forkSession(sessionId);
+    const forked = toSessionView(await api.forkSession(sessionId));
     useSessions.getState().upsert(forked);
     useSessions.getState().openTab(forked.id);
     return forked.id;
@@ -100,8 +104,8 @@ export async function loadChildSessions(parentId: string): Promise<void> {
   const api = client();
   if (!api) return;
   try {
-    const kids = await api.children(parentId);
-    useSessions.getState().loadChildren(parentId, kids);
+    const page = await api.listSessions({ parentID: parentId });
+    useSessions.getState().loadChildren(parentId, page.data.map(toSessionView));
   } catch (error) {
     console.error("children failed", error);
   }

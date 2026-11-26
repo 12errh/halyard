@@ -1,198 +1,236 @@
-import { describe, expect, it, vi } from "vitest";
+import { describe, expect, it } from "vitest";
 import { OpencodeClient, OpencodeError } from "@/lib/opencode/client";
 
-function jsonResponse(body: unknown, status = 200): Response {
-  return {
-    ok: status >= 200 && status < 300,
+const BASE = "http://127.0.0.1:4096";
+const PASSWORD = "hunter2";
+const AUTH = `Basic ${btoa(`opencode:${PASSWORD}`)}`;
+
+type Handler = (url: string, init: RequestInit) => Response | Promise<Response>;
+
+function json(value: unknown, status = 200): Response {
+  return new Response(JSON.stringify(value), {
     status,
-    json: async () => body,
-  } as unknown as Response;
+    headers: { "content-type": "application/json" },
+  });
 }
 
-describe("OpencodeClient", () => {
-  it("targets the configured base url", async () => {
-    const fetchImpl = vi.fn().mockResolvedValue(jsonResponse([]));
-    const client = new OpencodeClient("http://127.0.0.1:5555", fetchImpl);
-
-    await client.listSessions();
-
-    expect(fetchImpl).toHaveBeenCalledWith("http://127.0.0.1:5555/session", expect.anything());
-  });
-
-  it("builds the event stream url", () => {
-    expect(new OpencodeClient("http://127.0.0.1:4096").eventsUrl()).toBe(
-      "http://127.0.0.1:4096/event",
-    );
-  });
-
-  it("returns the parsed body on success", async () => {
-    const fetchImpl = vi.fn().mockResolvedValue(jsonResponse([{ id: "ses_1", title: "x" }]));
-    const client = new OpencodeClient("http://x", fetchImpl);
-
-    await expect(client.listSessions()).resolves.toEqual([{ id: "ses_1", title: "x" }]);
-  });
-
-  it("turns a non-2xx into OpencodeError carrying the status", async () => {
-    const fetchImpl = vi.fn().mockResolvedValue(jsonResponse({}, 404));
-    const client = new OpencodeClient("http://x", fetchImpl);
-
-    await expect(client.messages("ses_missing")).rejects.toBeInstanceOf(OpencodeError);
-    await expect(client.messages("ses_missing")).rejects.toMatchObject({ status: 404 });
-  });
-
-  it("explains an unreachable server rather than leaking a fetch TypeError", async () => {
-    const fetchImpl = vi.fn().mockRejectedValue(new TypeError("Failed to fetch"));
-    const client = new OpencodeClient("http://127.0.0.1:4096", fetchImpl);
-
-    await expect(client.health()).rejects.toThrow(/cannot reach opencode/);
-  });
-
-  it("sends a prompt to prompt_async, not the blocking message endpoint", async () => {
-    // Verified against opencode 1.18.35: /message blocks for the whole turn and
-    // returns nothing incremental, which would defeat token streaming.
-    const fetchImpl = vi.fn().mockResolvedValue(new Response(null, { status: 204 }));
-    const client = new OpencodeClient("http://x", fetchImpl);
-
-    await client.sendPrompt("ses_1", {
-      model: { providerID: "opencode", modelID: "m" },
-      parts: [{ type: "text", text: "hello" }],
-    });
-
-    const [url, init] = fetchImpl.mock.calls[0]!;
-    expect(url).toBe("http://x/session/ses_1/prompt_async");
-    expect(init?.method).toBe("POST");
-    expect(JSON.parse(String(init?.body))).toEqual({
-      model: { providerID: "opencode", modelID: "m" },
-      parts: [{ type: "text", text: "hello" }],
-    });
-  });
-
-  it("omits the title when creating a default session", async () => {
-    const fetchImpl = vi.fn().mockResolvedValue(jsonResponse({ id: "ses_1" }));
-    const client = new OpencodeClient("http://x", fetchImpl);
-
-    await client.createSession();
-    expect(JSON.parse(String(fetchImpl.mock.calls[0]![1]?.body))).toEqual({});
-  });
-
-  it("sends a title when one is given", async () => {
-    const fetchImpl = vi.fn().mockResolvedValue(jsonResponse({ id: "ses_1" }));
-    await new OpencodeClient("http://x", fetchImpl).createSession("My work");
-    expect(JSON.parse(String(fetchImpl.mock.calls[0]![1]?.body))).toEqual({ title: "My work" });
-  });
-
-  it("encodes file search queries", async () => {
-    const fetchImpl = vi.fn().mockResolvedValue(jsonResponse(["src/a.ts"]));
-    const client = new OpencodeClient("http://x", fetchImpl);
-
-    await client.files("a b&c", 5);
-    expect(fetchImpl.mock.calls[0]![0]).toBe("http://x/find/file?query=a%20b%26c&limit=5&type=file");
-  });
-
-  it("issues DELETE for a session removal", async () => {
-    const fetchImpl = vi.fn().mockResolvedValue(jsonResponse(true));
-    await new OpencodeClient("http://x", fetchImpl).deleteSession("ses_1");
-    expect(fetchImpl.mock.calls[0]![1]?.method).toBe("DELETE");
-  });
-
-  it("issues PATCH for a rename", async () => {
-    const fetchImpl = vi.fn().mockResolvedValue(jsonResponse({ id: "ses_1" }));
-    await new OpencodeClient("http://x", fetchImpl).renameSession("ses_1", "New");
-    const init = fetchImpl.mock.calls[0]![1]!;
-    expect(init.method).toBe("PATCH");
-    expect(JSON.parse(String(init.body))).toEqual({ title: "New" });
-  });
-});
-
-describe("file listing", () => {
-  it("always sends the path key, using empty for the project root", async () => {
-    // The server answers 400 "Missing key [path]" when the key is absent.
-    const fetchImpl = vi.fn().mockResolvedValue(jsonResponse([]));
-    const client = new OpencodeClient("http://x", fetchImpl);
-
-    await client.listFiles();
-    expect(fetchImpl.mock.calls[0]![0]).toBe("http://x/file?path=");
-  });
-
-  it("encodes subdirectory paths", async () => {
-    const fetchImpl = vi.fn().mockResolvedValue(jsonResponse([]));
-    await new OpencodeClient("http://x", fetchImpl).listFiles("src/lib");
-    expect(fetchImpl.mock.calls[0]![0]).toBe("http://x/file?path=src%2Flib");
-  });
-});
-
-describe("permission replies", () => {
-  const permission = {
-    id: "per_1",
-    sessionID: "ses_1",
-    action: "bash",
-    resources: [],
-    version: 2 as const,
-    askedAt: 0,
+function harness(handler: Handler) {
+  const calls: Array<{ url: string; init: RequestInit }> = [];
+  const fetchImpl: typeof fetch = async (input, init) => {
+    const url =
+      typeof input === "string" ? input : input instanceof URL ? input.href : input.url;
+    const request = init ?? {};
+    calls.push({ url, init: request });
+    return handler(url, request);
   };
+  return { client: new OpencodeClient(BASE, PASSWORD, fetchImpl), calls };
+}
 
-  it("uses the v2 endpoint for v2 requests", async () => {
-    const fetchImpl = vi.fn().mockResolvedValue(jsonResponse({}));
-    await new OpencodeClient("http://x", fetchImpl).replyPermission("ses_1", permission, "once");
-    expect(fetchImpl.mock.calls[0]![0]).toBe("http://x/api/session/ses_1/permission/per_1/reply");
-    expect(JSON.parse(String(fetchImpl.mock.calls[0]![1]?.body))).toEqual({ reply: "once" });
+function deferred() {
+  let resolve!: () => void;
+  const promise = new Promise<void>((settle) => {
+    resolve = settle;
+  });
+  return { promise, resolve };
+}
+
+function header(init: RequestInit, name: string): string | undefined {
+  const headers = init.headers;
+  if (!headers) return undefined;
+  if (headers instanceof Headers) return headers.get(name) ?? undefined;
+  const record = headers as Record<string, string>;
+  return record[name] ?? record[name.toLowerCase()];
+}
+
+// ---------------------------------------------------------------------------
+
+describe("auth", () => {
+  it("sends the exact Basic header on every request", async () => {
+    const { client, calls } = harness((url) => {
+      if (url.includes("/api/info")) return json({ version: "2.4.2" });
+      if (url.includes("/api/vcs")) return json({ data: {} });
+      if (url.includes("/api/fs/read")) return new Response("text");
+      return new Response(null, { status: 204 });
+    });
+
+    await client.info();
+    await client.listSessions();
+    await client.createSession();
+    await client.updateSession("ses_1", { title: "T" });
+    await client.deleteSession("ses_1");
+    await client.vcs();
+    await client.readFile("README.md");
+
+    expect(calls).toHaveLength(7);
+    for (const call of calls) {
+      expect(header(call.init, "Authorization")).toBe(AUTH);
+    }
   });
 
-  it("uses the v1 endpoint for v1 requests", async () => {
-    const fetchImpl = vi.fn().mockResolvedValue(jsonResponse(true));
-    await new OpencodeClient("http://x", fetchImpl).replyPermission("ses_1", { ...permission, version: 1 }, "reject");
-    expect(fetchImpl.mock.calls[0]![0]).toBe("http://x/session/ses_1/permissions/per_1");
-    expect(JSON.parse(String(fetchImpl.mock.calls[0]![1]?.body))).toEqual({ response: "reject" });
-  });
-
-  it("falls back to v1 when the v2 endpoint 404s", async () => {
-    // A v1-only server must not leave the agent blocked forever.
-    const fetchImpl = vi
-      .fn()
-      .mockResolvedValueOnce(jsonResponse({}, 404))
-      .mockResolvedValueOnce(jsonResponse(true));
-    await new OpencodeClient("http://x", fetchImpl).replyPermission("ses_1", permission, "once");
-    expect(fetchImpl).toHaveBeenCalledTimes(2);
-    expect(fetchImpl.mock.calls[1]![0]).toBe("http://x/session/ses_1/permissions/per_1");
-  });
-
-  it("does not fall back on other errors", async () => {
-    const fetchImpl = vi.fn().mockResolvedValue(jsonResponse({}, 500));
-    await expect(
-      new OpencodeClient("http://x", fetchImpl).replyPermission("ses_1", permission, "once"),
-    ).rejects.toBeInstanceOf(OpencodeError);
-    expect(fetchImpl).toHaveBeenCalledTimes(1);
-  });
-
-  it("unwraps the data envelope when listing", async () => {
-    const fetchImpl = vi.fn().mockResolvedValue(
-      jsonResponse({ data: [{ id: "per_1", sessionID: "ses_1", action: "bash", resources: ["ls"] }] }),
+  it("sets content-type only when it sends a body", async () => {
+    const { client, calls } = harness((url) =>
+      url.includes("/api/info")
+        ? json({ version: "2.4.2" })
+        : json({ data: { id: "ses_1" } }),
     );
-    const pending = await new OpencodeClient("http://x", fetchImpl).listPermissions("ses_1");
-    expect(pending).toHaveLength(1);
-    expect(pending[0]).toMatchObject({ id: "per_1", action: "bash", version: 2 });
+
+    await client.info();
+    await client.createSession({ title: "New" });
+
+    expect(header(calls[0]!.init, "Content-Type")).toBeUndefined();
+    expect(header(calls[1]!.init, "Content-Type")).toBe("application/json");
+    expect(calls[1]!.init.body).toBe(JSON.stringify({ title: "New" }));
   });
 
-  it("drops rows that cannot be rendered", async () => {
-    const fetchImpl = vi.fn().mockResolvedValue(jsonResponse({ data: [{ nope: true }] }));
-    expect(await new OpencodeClient("http://x", fetchImpl).listPermissions("ses_1")).toEqual([]);
+  it("never carries the password in the query or body", async () => {
+    const { client, calls } = harness(() => json({ data: [] }));
+
+    await client.info();
+
+    expect(calls[0]!.url).not.toContain(PASSWORD);
+    expect(calls[0]!.init.body).toBeUndefined();
   });
 });
 
-describe("revert", () => {
-  it("posts the message id", async () => {
-    const fetchImpl = vi.fn().mockResolvedValue(jsonResponse({ id: "ses_1" }));
-    await new OpencodeClient("http://x", fetchImpl).revert("ses_1", "msg_9");
-    expect(fetchImpl.mock.calls[0]![0]).toBe("http://x/session/ses_1/revert");
-    expect(JSON.parse(String(fetchImpl.mock.calls[0]![1]?.body))).toEqual({ messageID: "msg_9" });
+describe("transport", () => {
+  it("returns undefined for a 204", async () => {
+    const { client } = harness(() => new Response(null, { status: 204 }));
+    await expect(client.updateSession("ses_1", { archived: true })).resolves.toBeUndefined();
   });
 
-  it("includes the part id when given", async () => {
-    const fetchImpl = vi.fn().mockResolvedValue(jsonResponse({ id: "ses_1" }));
-    await new OpencodeClient("http://x", fetchImpl).revert("ses_1", "msg_9", "prt_2");
-    expect(JSON.parse(String(fetchImpl.mock.calls[0]![1]?.body))).toEqual({
-      messageID: "msg_9",
-      partID: "prt_2",
+  it("surfaces the flat error envelope", async () => {
+    const { client } = harness(() =>
+      json({ _tag: "BadRequest", message: "session not found", kind: "BadRequest" }, 404),
+    );
+
+    await expect(client.getSession("ses_missing")).rejects.toMatchObject({
+      message: "session not found",
+      status: 404,
     });
+    await expect(client.getSession("ses_missing")).rejects.toBeInstanceOf(OpencodeError);
+  });
+
+  it("maps list options onto the camelCase query keys", async () => {
+    const { client, calls } = harness(() =>
+      json({ data: [], cursor: { next: "n2", previous: null } }),
+    );
+
+    const page = await client.listSessions({
+      limit: 5,
+      cursor: "c1",
+      search: "hi",
+      parentID: "ses_parent",
+      archived: true,
+    });
+
+    expect(page).toEqual({ data: [], cursor: { next: "n2", previous: null } });
+    const url = calls[0]!.url;
+    expect(url).toContain("limit=5");
+    expect(url).toContain("cursor=c1");
+    expect(url).toContain("search=hi");
+    expect(url).toContain("parentID=ses_parent");
+    expect(url).toContain("archived=true");
+  });
+
+  it("unwraps data pages for messages", async () => {
+    const { client } = harness(() =>
+      json({ data: [{ id: "msg_1" }], cursor: { next: "n1" } }),
+    );
+
+    const page = await client.messages("ses_1", { limit: 10 });
+    expect(page.data).toEqual([{ id: "msg_1" }]);
+    expect(page.cursor).toEqual({ next: "n1" });
+  });
+
+  it("unwraps the active session map", async () => {
+    const { client } = harness(() => json({ data: { ses_1: { type: "running" } } }));
+    await expect(client.active()).resolves.toEqual({ ses_1: { type: "running" } });
+  });
+
+  it("flattens the vcs branch names", async () => {
+    const withBranches = harness(() =>
+      json({ data: { branch: { current: "feature", default: "main" } } }),
+    );
+    await expect(withBranches.client.vcs()).resolves.toEqual({
+      branch: "feature",
+      defaultBranch: "main",
+    });
+
+    const empty = harness(() => json({ data: {} }));
+    await expect(empty.client.vcs()).resolves.toEqual({ branch: null, defaultBranch: null });
+  });
+
+  it("maps fs entries to paths", async () => {
+    const { client, calls } = harness(() =>
+      json({
+        data: [
+          { path: "src/a.ts", type: "file" },
+          { path: "src/b.ts", type: "file" },
+        ],
+      }),
+    );
+
+    await expect(client.files("index", 5)).resolves.toEqual(["src/a.ts", "src/b.ts"]);
+    expect(calls[0]!.url).toContain("query=index");
+    expect(calls[0]!.url).toContain("type=file");
+    expect(calls[0]!.url).toContain("limit=5");
+  });
+
+  it("reads files as raw text and encodes each path segment", async () => {
+    const { client, calls } = harness(() => new Response("export const x = 1;\n"));
+
+    await expect(client.readFile("src/my file.ts")).resolves.toBe("export const x = 1;\n");
+    expect(calls[0]!.url).toBe(`${BASE}/api/fs/read/src/my%20file.ts`);
+  });
+
+  it("posts the session model and agent as wrapped bodies", async () => {
+    const { client, calls } = harness(() => new Response(null, { status: 204 }));
+
+    await client.setSessionModel("ses_1", { id: "claude", providerID: "anthropic" });
+    await client.setSessionAgent("ses_1", "build");
+
+    expect(calls[0]!.url).toBe(`${BASE}/api/session/ses_1/model`);
+    expect(calls[0]!.init.body).toBe(
+      JSON.stringify({ model: { id: "claude", providerID: "anthropic" } }),
+    );
+    expect(calls[1]!.init.body).toBe(JSON.stringify({ agent: "build" }));
+  });
+});
+
+describe("events", () => {
+  it("builds the v2 events URL", () => {
+    const { client } = harness(() => new Response(null, { status: 204 }));
+    expect(client.eventsUrl()).toBe(`${BASE}/api/event`);
+  });
+
+  it("changes serverKey when only the password changes", () => {
+    const first = new OpencodeClient(BASE, "first");
+    const second = new OpencodeClient(BASE, "second");
+    const same = new OpencodeClient(BASE, "first");
+
+    expect(first.serverKey).not.toBe(second.serverKey);
+    expect(first.serverKey).toBe(same.serverKey);
+  });
+
+  it("attaches credentials and the SSE accept header", async () => {
+    let headers: Record<string, string> | undefined;
+    const connected = deferred();
+    const fetchImpl: typeof fetch = async (_input, init) => {
+      headers = init?.headers as Record<string, string> | undefined;
+      connected.resolve();
+      return new Response("", { status: 200 });
+    };
+
+    const client = new OpencodeClient(BASE, PASSWORD);
+    const handle = client.subscribeEvents({
+      onEvent: () => {},
+      fetchImpl,
+      retryDelayMs: 1000,
+    });
+    await connected.promise;
+    handle.close();
+
+    expect(headers?.Authorization).toBe(AUTH);
+    expect(headers?.Accept).toBe("text/event-stream");
   });
 });

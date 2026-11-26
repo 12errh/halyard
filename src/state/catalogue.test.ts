@@ -21,7 +21,11 @@ function fakeClient(routes: Route[]) {
       headers: { "content-type": "application/json" },
     });
   });
-  return { client: new OpencodeClient("http://127.0.0.1:1", fetchImpl as unknown as typeof fetch), calls, fetchImpl };
+  return {
+    client: new OpencodeClient("http://127.0.0.1:1", "pw", fetchImpl as unknown as typeof fetch),
+    calls,
+    fetchImpl,
+  };
 }
 
 const COMMANDS = [
@@ -29,11 +33,10 @@ const COMMANDS = [
   { name: "brainstorming", description: "Think out loud", source: "skill" },
 ];
 
-const RESOURCES = {
-  "skill://brainstorming/SKILL.md": { uri: "skill://brainstorming/SKILL.md", mimeType: "text/markdown" },
-  "skill://writing/SKILL.md": { uri: "skill://writing/SKILL.md" },
-  "skill://writing/refs/style.md": { uri: "skill://writing/refs/style.md" },
-};
+const SKILLS = [
+  { name: "brainstorming", description: "Think out loud" },
+  { name: "writing", description: "Draft prose" },
+];
 
 describe("catalogue", () => {
   beforeEach(() => {
@@ -49,8 +52,8 @@ describe("catalogue", () => {
 
   it("fetches once however many times it is asked", async () => {
     const { client, calls } = fakeClient([
-      { match: /\/command$/, body: COMMANDS },
-      { match: /\/experimental\/resource/, body: RESOURCES },
+      { match: /\/command$/, body: { data: COMMANDS } },
+      { match: /\/skill$/, body: { data: SKILLS } },
     ]);
     useCatalogue.getState().setClient(client);
 
@@ -71,8 +74,8 @@ describe("catalogue", () => {
 
   it("puts /skill first, because it is the one worth reaching for", async () => {
     const { client } = fakeClient([
-      { match: /\/command$/, body: COMMANDS },
-      { match: /\/experimental\/resource/, body: RESOURCES },
+      { match: /\/command$/, body: { data: COMMANDS } },
+      { match: /\/skill$/, body: { data: SKILLS } },
     ]);
     useCatalogue.getState().setClient(client);
     await useCatalogue.getState().load();
@@ -85,8 +88,8 @@ describe("catalogue", () => {
 
   it("marks skills as skills so the menu can group them", async () => {
     const { client } = fakeClient([
-      { match: /\/command$/, body: COMMANDS },
-      { match: /\/experimental\/resource/, body: RESOURCES },
+      { match: /\/command$/, body: { data: COMMANDS } },
+      { match: /\/skill$/, body: { data: SKILLS } },
     ]);
     useCatalogue.getState().setClient(client);
     await useCatalogue.getState().load();
@@ -97,8 +100,8 @@ describe("catalogue", () => {
 
   it("collects skills for the picker, one entry per skill", async () => {
     const { client } = fakeClient([
-      { match: /\/command$/, body: COMMANDS },
-      { match: /\/experimental\/resource/, body: RESOURCES },
+      { match: /\/command$/, body: { data: COMMANDS } },
+      { match: /\/skill$/, body: { data: SKILLS } },
     ]);
     useCatalogue.getState().setClient(client);
     await useCatalogue.getState().load();
@@ -111,8 +114,8 @@ describe("catalogue", () => {
 
   it("says so when the command list cannot be read, instead of showing nothing", async () => {
     const { client } = fakeClient([
-      { match: /\/command$/, body: [], fail: true },
-      { match: /\/experimental\/resource/, body: RESOURCES },
+      { match: /\/command$/, body: { data: [] }, fail: true },
+      { match: /\/skill$/, body: { data: SKILLS } },
     ]);
     useCatalogue.getState().setClient(client);
     await useCatalogue.getState().load();
@@ -122,8 +125,8 @@ describe("catalogue", () => {
 
   it("drops the old list when the server changes", async () => {
     const first = fakeClient([
-      { match: /\/command$/, body: COMMANDS },
-      { match: /\/experimental\/resource/, body: RESOURCES },
+      { match: /\/command$/, body: { data: COMMANDS } },
+      { match: /\/skill$/, body: { data: SKILLS } },
     ]);
     useCatalogue.getState().setClient(first.client);
     await useCatalogue.getState().load();
@@ -131,8 +134,8 @@ describe("catalogue", () => {
 
     useCatalogue.getState().setClient(
       fakeClient([
-        { match: /\/command$/, body: [] },
-        { match: /\/experimental\/resource/, body: {} },
+        { match: /\/command$/, body: { data: [] } },
+        { match: /\/skill$/, body: { data: [] } },
       ]).client,
     );
     expect(useCatalogue.getState().commands).toEqual([]);
@@ -141,14 +144,14 @@ describe("catalogue", () => {
 
   it("re-reads after opencode announces a change", async () => {
     const { client, calls } = fakeClient([
-      { match: /\/command$/, body: COMMANDS },
-      { match: /\/experimental\/resource/, body: RESOURCES },
+      { match: /\/command$/, body: { data: COMMANDS } },
+      { match: /\/skill$/, body: { data: SKILLS } },
     ]);
     useCatalogue.getState().setClient(client);
     await useCatalogue.getState().load();
     expect(calls.filter((u) => u.endsWith("/command"))).toHaveLength(1);
 
-    useCatalogue.getState().ingest({ type: "plugin.added" } as never);
+    useCatalogue.getState().ingest({ type: "plugin.updated", data: {} } as never);
     await Promise.resolve();
     await new Promise((r) => setTimeout(r, 0));
     expect(calls.filter((u) => u.endsWith("/command"))).toHaveLength(2);
@@ -156,13 +159,13 @@ describe("catalogue", () => {
 
   it("ignores events that cannot change the command list", async () => {
     const { client, calls } = fakeClient([
-      { match: /\/command$/, body: COMMANDS },
-      { match: /\/experimental\/resource/, body: RESOURCES },
+      { match: /\/command$/, body: { data: COMMANDS } },
+      { match: /\/skill$/, body: { data: SKILLS } },
     ]);
     useCatalogue.getState().setClient(client);
     await useCatalogue.getState().load();
 
-    useCatalogue.getState().ingest({ type: "lsp.updated" } as never);
+    useCatalogue.getState().ingest({ type: "session.created", data: {} } as never);
     await new Promise((r) => setTimeout(r, 0));
     expect(calls.filter((u) => u.endsWith("/command"))).toHaveLength(1);
   });

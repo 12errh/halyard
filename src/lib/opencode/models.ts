@@ -7,6 +7,8 @@
  * defence in case a future build reaches for the richer endpoint by mistake.
  */
 
+import type { ModelCapabilitiesV2, ModelInfo, ProviderInfo } from "./types";
+
 export interface ModelCost {
   input?: number;
   output?: number;
@@ -81,64 +83,99 @@ export function stripSecrets<T>(value: T): T {
 }
 
 /**
- * Normalise `GET /provider` into the shape the UI uses.
+ * Join `GET /provider` and `GET /model` into the shape the UI uses.
  *
- * `name` is required by the picker, but some rows omit it, so fall back to the
- * id rather than rendering a blank row.
+ * The two endpoints are separate in v2; providers carry identity and
+ * activation, models carry limits and capabilities. `name` is required by the
+ * picker, so fall back to the id rather than rendering a blank row.
  */
-export function parseCatalogue(raw: unknown): ModelCatalogue {
-  const payload = stripSecrets(raw) as {
-    all?: unknown[];
-    connected?: unknown;
-    default?: Record<string, unknown>;
-  };
+const MEDIA: (keyof ModelInputCapabilities)[] = ["text", "image", "audio", "video", "pdf"];
 
-  const providers: Provider[] = [];
-  for (const entry of Array.isArray(payload?.all) ? payload.all : []) {
-    if (!entry || typeof entry !== "object") continue;
-    const record = entry as Record<string, unknown>;
-    const id = typeof record.id === "string" ? record.id : null;
-    if (!id) continue;
+/** v2 sends price tiers; the entry without a tier is the base price. */
+function baseCost(cost: ModelInfo["cost"]): ModelCost | undefined {
+  if (!cost) return undefined;
+  if (!Array.isArray(cost)) return cost;
+  return cost.find((tier) => !tier.tier) ?? cost[0];
+}
 
-    const rawModels = record.models;
-    const models: Record<string, ProviderModel> = {};
-    if (rawModels && typeof rawModels === "object") {
-      for (const [modelId, model] of Object.entries(rawModels as Record<string, unknown>)) {
-        if (!model || typeof model !== "object") continue;
-        const row = model as Record<string, unknown>;
-        models[modelId] = {
-          id: modelId,
-          providerID: id,
-          name: typeof row.name === "string" && row.name ? row.name : modelId,
-          family: typeof row.family === "string" ? row.family : undefined,
-          cost: row.cost as ModelCost | undefined,
-          limit: row.limit as ModelLimit | undefined,
-          status: typeof row.status === "string" ? row.status : undefined,
-          release_date: typeof row.release_date === "string" ? row.release_date : undefined,
-          capabilities: row.capabilities as ProviderModel["capabilities"],
-        };
-      }
+/** v2 sends input media as a list (`["text","image"]`); tolerate the old flags. */
+function mediaFlags(input: ModelCapabilitiesV2["input"]): ModelInputCapabilities | undefined {
+  if (!input) return undefined;
+  if (!Array.isArray(input)) return input;
+  const flags: ModelInputCapabilities = {};
+  for (const flag of MEDIA) flags[flag] = input.includes(flag);
+  return flags;
+}
+
+export function parseCatalogue(providers: ProviderInfo[], models: ModelInfo[]): ModelCatalogue {
+  const byProvider = new Map<string, Record<string, ProviderModel>>();
+
+  for (const model of models) {
+    const providerID = model.providerID;
+    if (!providerID) continue;
+    const modelID = model.modelID || model.id;
+    if (!modelID) continue;
+
+    const capabilities = model.capabilities;
+    let bucket = byProvider.get(providerID);
+    if (!bucket) {
+      bucket = {};
+      byProvider.set(providerID, bucket);
     }
+    bucket[modelID] = {
+      id: modelID,
+      providerID,
+      name: model.name || modelID,
+      family: model.family,
+      cost: baseCost(model.cost),
+      limit: model.limit,
+      status: model.status,
+      release_date: model.release_date,
+      capabilities: capabilities
+        ? {
+            reasoning: capabilities.reasoning,
+            attachment: capabilities.attachment,
+            toolcall: capabilities.toolcall ?? capabilities.tools,
+            input: mediaFlags(capabilities.input),
+          }
+        : undefined,
+    };
+  }
 
-    providers.push({
-      id,
-      name: typeof record.name === "string" && record.name ? record.name : id,
-      models,
+  const rows: Provider[] = [];
+  const seen = new Set<string>();
+  const activation = new Map<string, ProviderInfo["activation"]>();
+
+  for (const provider of providers) {
+    if (typeof provider.id !== "string" || provider.id.length === 0) continue;
+    if (seen.has(provider.id)) continue;
+    seen.add(provider.id);
+    activation.set(provider.id, provider.activation);
+    rows.push({
+      id: provider.id,
+      name: provider.name || provider.id,
+      models: byProvider.get(provider.id) ?? {},
     });
   }
 
-  const connected = Array.isArray(payload?.connected)
-    ? payload.connected.filter((id): id is string => typeof id === "string")
-    : [];
-
-  const defaults: Record<string, string> = {};
-  if (payload?.default && typeof payload.default === "object") {
-    for (const [providerId, modelId] of Object.entries(payload.default)) {
-      if (typeof modelId === "string") defaults[providerId] = modelId;
-    }
+  // `/provider` is populated lazily by the v2 server; models can arrive first.
+  // Synthesise a row rather than dropping them, and mark it unconnected until
+  // its activation is known.
+  for (const [providerID, bucket] of byProvider) {
+    if (seen.has(providerID)) continue;
+    rows.push({ id: providerID, name: providerID, models: bucket });
   }
 
-  return { providers, connected, defaults };
+  const connected = rows
+    .filter((row) => {
+      // A provider present in `/provider` without an activation is a v1 build;
+      // there, absence of "disabled" means usable. A synthesised row has no
+      // activation evidence at all, so it is not counted as connected.
+      return activation.has(row.id) && activation.get(row.id) !== "disabled";
+    })
+    .map((row) => row.id);
+
+  return { providers: rows, connected, defaults: {} };
 }
 
 export interface FlatModel {
@@ -160,9 +197,10 @@ export function flattenModels(catalogue: ModelCatalogue): FlatModel[] {
   for (const provider of catalogue.providers) {
     const connected = catalogue.connected.includes(provider.id);
     for (const model of Object.values(provider.models)) {
-      const cost = model.cost ?? {};
-      // Treat "no price at all" as free; that is how the free tier is expressed.
-      const free = !cost.input && !cost.output;
+      const cost = model.cost;
+      // A provider that publishes no price at all is treated as free, as is an
+      // explicit all-zero tier. Undefined fields count as zero.
+      const free = (cost?.input ?? 0) === 0 && (cost?.output ?? 0) === 0;
       out.push({
         providerID: provider.id,
         providerName: provider.name,

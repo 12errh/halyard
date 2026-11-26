@@ -1,6 +1,5 @@
 import { describe, expect, it, vi } from "vitest";
 import { OpencodeClient } from "@/lib/opencode/client";
-import { subscribe } from "@/lib/opencode/sse";
 
 /**
  * Regression guard for "Can only call Window.fetch on instances of Window".
@@ -40,8 +39,8 @@ describe("http receiver", () => {
     const harness = installStrictFetch();
     try {
       // No fetchImpl passed: this is the default path the app actually uses.
-      const client = new OpencodeClient("http://127.0.0.1:4096");
-      await expect(client.health()).resolves.toEqual({ healthy: true, version: "1.18.35" });
+      const client = new OpencodeClient("http://127.0.0.1:4096", "pw");
+      await expect(client.info()).resolves.toEqual({ healthy: true, version: "1.18.35" });
       expect(harness.calls).toHaveLength(1);
       expect(harness.calls[0]!.thisArg).toBe(window);
     } finally {
@@ -52,7 +51,8 @@ describe("http receiver", () => {
   it("the SSE transport calls fetch with the window as receiver", async () => {
     const harness = installStrictFetch();
     try {
-      const handle = subscribe("http://127.0.0.1:4096/event", { onEvent: () => {} });
+      const client = new OpencodeClient("http://127.0.0.1:4096", "pw");
+      const handle = client.subscribeEvents({ onEvent: () => {} });
       await vi.waitFor(() => expect(harness.calls.length).toBeGreaterThan(0));
       expect(harness.calls[0]!.thisArg).toBe(window);
       handle.close();

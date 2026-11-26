@@ -15,9 +15,14 @@
  */
 
 import { create } from "zustand";
-import { OpencodeClient, type FormatterStatus, type LspStatus, type StatusEntry } from "@/lib/opencode/client";
+import { OpencodeClient } from "@/lib/opencode/client";
 import { parseCatalogue, stripSecrets, type Provider } from "@/lib/opencode/models";
-import type { ServerEvent } from "@/lib/opencode/types";
+import type {
+  CredentialEntry,
+  IntegrationInfo,
+  McpServer,
+  V2Event,
+} from "@/lib/opencode/types";
 
 export interface Agent {
   name: string;
@@ -26,26 +31,32 @@ export interface Agent {
   native?: boolean;
 }
 
-export interface McpState extends StatusEntry {
-  status?: string;
+export interface McpState {
+  name: string;
+  status: string;
   error?: string;
 }
 
-/** Events that invalidate the catalogue. */
+/** Events that invalidate the provider/model/agent catalogue. */
 const CATALOGUE_EVENTS = new Set([
-  "catalog.updated",
-  "integration.updated",
-  "integration.connection.updated",
-  "plugin.added",
+  "config.updated",
+  "provider.updated",
+  "model.updated",
+  "agent.updated",
+  "command.updated",
+  "skill.updated",
+  "plugin.updated",
   "installation.updated",
 ]);
 
-/** Events that invalidate server diagnostics. */
-const DIAGNOSTIC_EVENTS = new Set([
-  "mcp.tools.changed",
-  "file.watcher.updated",
-  "lsp.updated",
-  "plugin.added",
+/** Events that change the MCP servers or their status. */
+const DIAGNOSTIC_EVENTS = new Set(["mcp.status.changed", "mcp.resources.changed"]);
+
+/** Events that change the integration or credential lists. */
+const INTEGRATION_EVENTS = new Set([
+  "integration.updated",
+  "credential.updated",
+  "credential.switched",
 ]);
 
 interface SystemStore {
@@ -53,10 +64,9 @@ interface SystemStore {
   connected: string[];
   defaults: Record<string, string>;
   mcp: Record<string, McpState>;
-  lsp: LspStatus[];
-  formatters: FormatterStatus[];
   agents: Agent[];
-  authMethods: Record<string, Array<{ type: string; label: string }>>;
+  integrations: IntegrationInfo[];
+  credentials: CredentialEntry[];
 
   /** True only for the very first load; after that the data is already here. */
   loading: boolean;
@@ -66,10 +76,11 @@ interface SystemStore {
   setClient(client: OpencodeClient | null): void;
   load(): Promise<void>;
   /** Apply a server event; returns true when it triggered a refresh. */
-  ingest(event: ServerEvent): void;
+  ingest(event: V2Event): void;
   refreshCatalogue(): Promise<void>;
   refreshDiagnostics(): Promise<void>;
   refreshAgents(): Promise<void>;
+  refreshIntegrations(): Promise<void>;
 }
 
 export const useSystem = create<SystemStore>((set, get) => {
@@ -92,16 +103,15 @@ export const useSystem = create<SystemStore>((set, get) => {
     connected: [],
     defaults: {},
     mcp: {},
-    lsp: [],
-    formatters: [],
     agents: [],
-    authMethods: {},
+    integrations: [],
+    credentials: [],
     loading: false,
     error: null,
     client: null,
 
     setClient: (client) => {
-      const changed = get().client?.baseUrl !== client?.baseUrl;
+      const changed = get().client?.serverKey !== client?.serverKey;
       set({ client });
       // A different server means different providers, models and servers.
       if (changed) {
@@ -109,10 +119,9 @@ export const useSystem = create<SystemStore>((set, get) => {
           providers: [],
           connected: [],
           mcp: {},
-          lsp: [],
-          formatters: [],
           agents: [],
-          authMethods: {},
+          integrations: [],
+          credentials: [],
         });
       }
     },
@@ -126,6 +135,7 @@ export const useSystem = create<SystemStore>((set, get) => {
           get().refreshCatalogue(),
           get().refreshDiagnostics(),
           get().refreshAgents(),
+          get().refreshIntegrations(),
         ]);
         set({ loading: false });
       } catch (error) {
@@ -141,6 +151,10 @@ export const useSystem = create<SystemStore>((set, get) => {
         });
         return;
       }
+      if (INTEGRATION_EVENTS.has(event.type)) {
+        schedule(() => get().refreshIntegrations());
+        return;
+      }
       if (DIAGNOSTIC_EVENTS.has(event.type)) {
         schedule(() => get().refreshDiagnostics());
       }
@@ -150,18 +164,17 @@ export const useSystem = create<SystemStore>((set, get) => {
       const client = get().client;
       if (!client) return;
       try {
-        const [raw, methods] = await Promise.all([
-          client.providerCatalogue(),
-          client.authMethods().catch(() => ({})),
+        // Providers carry identity and activation; models carry limits and
+        // capabilities. Both are separate v2 routes, and neither is a secret.
+        const [providers, models] = await Promise.all([
+          client.providers(),
+          client.models(),
         ]);
-        // `GET /provider` carries no key field, but strip anyway so a future
-        // endpoint swap cannot leak one into component state.
-        const catalogue = parseCatalogue(stripSecrets(raw));
+        const catalogue = parseCatalogue(stripSecrets(providers), stripSecrets(models));
         set({
           providers: catalogue.providers,
           connected: catalogue.connected,
           defaults: catalogue.defaults,
-          authMethods: stripSecrets(methods) as Record<string, Array<{ type: string; label: string }>>,
           error: null,
         });
       } catch (error) {
@@ -172,12 +185,13 @@ export const useSystem = create<SystemStore>((set, get) => {
     refreshDiagnostics: async () => {
       const client = get().client;
       if (!client) return;
-      const [mcp, lsp, formatters] = await Promise.all([
-        client.mcpStatus().catch(() => ({})),
-        client.lspStatus().catch(() => []),
-        client.formatterStatus().catch(() => []),
-      ]);
-      set({ mcp, lsp, formatters });
+      const servers = await client.mcpStatus().catch(() => [] as McpServer[]);
+      const mcp: Record<string, McpState> = {};
+      for (const server of servers) {
+        const state = parseMcpStatus(server);
+        if (state) mcp[state.name] = state;
+      }
+      set({ mcp });
     },
 
     refreshAgents: async () => {
@@ -186,8 +200,39 @@ export const useSystem = create<SystemStore>((set, get) => {
       const agents = await client.agents().catch(() => []);
       set({ agents });
     },
+
+    refreshIntegrations: async () => {
+      const client = get().client;
+      if (!client) return;
+      const [integrations, credentials] = await Promise.all([
+        client.integrations().catch(() => [] as IntegrationInfo[]),
+        client.credentials().catch(() => [] as CredentialEntry[]),
+      ]);
+      set({ integrations, credentials });
+    },
   };
 });
+
+/**
+ * Normalise one `GET /api/mcp` row.
+ *
+ * The v2 server nests state (`{status: {status, error}}`) while the older
+ * flat string survives in a few builds; both are accepted.
+ */
+function parseMcpStatus(server: McpServer): McpState | null {
+  if (!server || typeof server.name !== "string") return null;
+  const raw = (server as { status?: unknown }).status;
+  if (typeof raw === "string") return { name: server.name, status: raw };
+  if (raw && typeof raw === "object") {
+    const record = raw as { status?: unknown; error?: unknown };
+    return {
+      name: server.name,
+      status: typeof record.status === "string" ? record.status : "unknown",
+      error: typeof record.error === "string" ? record.error : undefined,
+    };
+  }
+  return { name: server.name, status: "unknown" };
+}
 
 // --- Selectors -------------------------------------------------------------
 

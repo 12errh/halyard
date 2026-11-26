@@ -29,6 +29,7 @@ src-tauri/gen/schemas
 
 # Test output
 coverage
+__pycache__/
 
 # TypeScript incremental build cache
 *.tsbuildinfo

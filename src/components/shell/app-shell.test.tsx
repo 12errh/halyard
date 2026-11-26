@@ -1,5 +1,5 @@
 import { describe, expect, it, vi, beforeEach } from "vitest";
-import { render, screen } from "@testing-library/react";
+import { render, screen, waitFor } from "@testing-library/react";
 import { AppShell } from "@/components/shell/app-shell";
 import { useProjects } from "@/state/projects";
 import { useServer } from "@/state/server";
@@ -99,6 +99,23 @@ describe("AppShell mounts", () => {
     expect(screen.getByLabelText("Toggle sidebar")).toBeInTheDocument();
     expect(screen.getByLabelText("Toggle file explorer")).toBeInTheDocument();
     expect(screen.getByLabelText("Settings")).toBeInTheDocument();
+  });
+
+  it("opens the event stream with credentials", async () => {
+    render(<AppShell />);
+    await ready();
+
+    await waitFor(() => {
+      const calls = vi.mocked(globalThis.fetch).mock.calls;
+      const event = calls.find(([url]) => String(url).includes("/api/event"));
+      expect(event).toBeTruthy();
+      const init = event?.[1];
+      // The v2 server rejects an unauthenticated /api/event with 401, which is
+      // what filled the console and starved the thread of every event.
+      expect(new Headers(init?.headers).get("Authorization")).toBe(
+        `Basic ${btoa("opencode:test")}`,
+      );
+    });
   });
 
   it("shows an empty state rather than a blank pane", async () => {

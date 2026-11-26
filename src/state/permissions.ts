@@ -8,12 +8,12 @@
  */
 
 import { create } from "zustand";
+import { toPendingPermission } from "@/lib/opencode/types";
 import type {
-  PermissionAskedV1,
-  PermissionAskedV2,
   PermissionReply,
   PendingPermission,
-  ServerEvent,
+  Permission,
+  V2Event,
 } from "@/lib/opencode/types";
 
 export type { PendingPermission } from "@/lib/opencode/types";
@@ -54,58 +54,30 @@ function drop(state: PermissionsState, sessionID: string, id: string): Permissio
   return { bySession: { ...state.bySession, [sessionID]: next } };
 }
 
-export function fromV1(event: PermissionAskedV1, askedAt: number): PendingPermission {
-  return {
-    id: event.id,
-    sessionID: event.sessionID,
-    action: event.permission,
-    resources: event.patterns ?? [],
-    save: event.always,
-    tool: event.tool,
-    version: 1,
-    askedAt,
-  };
-}
-
-export function fromV2(event: PermissionAskedV2, askedAt: number): PendingPermission {
-  return {
-    id: event.id,
-    sessionID: event.sessionID,
-    action: event.action,
-    resources: event.resources ?? [],
-    save: event.save,
-    tool: event.source
-      ? { messageID: event.source.messageID, callID: event.source.callID }
-      : undefined,
-    version: 2,
-    askedAt,
-  };
-}
-
 /**
  * Apply one event to the permission state.
  *
  * Pure and idempotent for `asked`: the server re-broadcasts the request on
  * reconnect, and re-asking must not reset the card's position or duplicate it.
+ * v2 carries the request itself in `data`; there is no wrapper object.
  */
 export function applyPermissionEvent(
   state: PermissionsState,
-  event: ServerEvent,
+  event: V2Event,
   now: number,
 ): PermissionsState {
-  const props = event.properties as Record<string, unknown>;
+  const data = (event.data ?? {}) as Record<string, unknown>;
 
   switch (event.type) {
     case "permission.asked":
-      return put(state, fromV1(props as unknown as PermissionAskedV1, now));
+      return put(state, {
+        ...toPendingPermission(data as unknown as Permission.Request),
+        askedAt: now,
+      });
 
-    case "permission.v2.asked":
-      return put(state, fromV2(props as unknown as PermissionAskedV2, now));
-
-    case "permission.replied":
-    case "permission.v2.replied": {
-      const sessionID = String(props.sessionID ?? "");
-      const requestID = String(props.requestID ?? "");
+    case "permission.replied": {
+      const sessionID = String(data.sessionID ?? "");
+      const requestID = String(data.requestID ?? "");
       return drop(state, sessionID, requestID);
     }
 
@@ -174,7 +146,7 @@ export const REPLY_LABEL: Record<PermissionReply, string> = {
 };
 
 interface PermissionStore extends PermissionsState {
-  ingest(event: ServerEvent): void;
+  ingest(event: V2Event): void;
   sync(sessionID: string, incoming: PendingPermission[]): void;
   /** Optimistically clear once a reply is sent. */
   resolve(sessionID: string, id: string): void;

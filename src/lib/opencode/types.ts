@@ -1,14 +1,27 @@
 /**
- * Wire types for the opencode server.
+ * opencode v2 wire types plus the view model the UI renders.
  *
- * These mirror the server's OpenAPI spec (`GET /doc`) for opencode 1.18.x.
- * Fields are typed as the server actually sends them; anything genuinely
- * untyped upstream is `unknown` rather than a hopeful guess.
+ * The v2.4.x server has no v1 routes left: events arrive as a uniform
+ * `V2Event` envelope on `/api/event`, message history is a flat tagged union
+ * (assistant content is inline, there are no separate part objects), and every
+ * request needs HTTP Basic auth. These types mirror that wire format; the
+ * adapters at the bottom turn it into the flatter view model the components
+ * already speak, so the rendering layer stays free of envelope noise.
  */
 
+// --- Shared primitives ----------------------------------------------------
+
+/** How the view model names a model. */
 export interface ModelRef {
   providerID: string;
   modelID: string;
+}
+
+/** How the v2 wire names a model: `Session.ModelRef`. */
+export interface ModelRefV2 {
+  id: string;
+  providerID: string;
+  variant?: string;
 }
 
 export interface TimeParts {
@@ -17,9 +30,6 @@ export interface TimeParts {
   completed?: number;
 }
 
-/** The raw `/experimental/resource` payload: one record per resource file. */
-export type ClientResources = Record<string, Record<string, unknown>>;
-
 export interface TokenUsage {
   input: number;
   output: number;
@@ -27,54 +37,345 @@ export interface TokenUsage {
   cache?: { read: number; write: number };
 }
 
+/** `TokenUsage` as the v2 wire requires it: every counter present. */
+export interface TokenUsageV2 {
+  input: number;
+  output: number;
+  reasoning: number;
+  cache: { read: number; write: number };
+}
+
+export interface StructuredError {
+  type: string;
+  message: string;
+  status?: number;
+  response?: { body: string };
+  retryAfterMs?: number;
+  [key: string]: unknown;
+}
+
+export interface CursorV2 {
+  previous: string | null;
+  next: string | null;
+}
+
+export interface ServerInfoV2 {
+  version: string;
+  pid: number;
+  hostname?: string | null;
+  urls: string[];
+  paths: { tmp: string; [key: string]: string };
+  capabilities?: { persistentPty?: boolean | null; [key: string]: unknown };
+}
+
+export interface LocationRef {
+  directory: string;
+  workspaceID?: string;
+}
+
+export interface LocationPublicRef {
+  directory: string;
+}
+
+// --- Events ---------------------------------------------------------------
+
+/** Every event on `/api/event` is this envelope; `data` varies by type. */
+export interface V2Event<T = Record<string, unknown>> {
+  id: string;
+  created?: number;
+  type: string;
+  data: T;
+  location?: LocationRef | LocationPublicRef | null;
+  metadata?: Record<string, unknown>;
+  durable?: { aggregateID: string; seq: number; version: number };
+}
+
 // --- Sessions -------------------------------------------------------------
 
+/** `Session.Info` as the v2 wire sends it. */
+export interface SessionInfoV2 {
+  id: string;
+  projectID: string;
+  cost: number;
+  tokens: TokenUsageV2;
+  time: { created: number; updated: number; archived?: number };
+  location: LocationPublicRef;
+  title?: string;
+  slug?: string;
+  parentID?: string;
+  agent?: string;
+  model?: ModelRefV2;
+  archived?: boolean;
+  metadata?: Record<string, unknown>;
+  version?: string;
+}
+
+/** The session shape the UI consumes. */
 export interface Session {
   id: string;
-  slug: string;
-  projectID: string;
+  title: string;
   directory: string;
   parentID?: string;
-  title: string;
+  archived?: boolean;
   agent?: string;
-  model?: { id: string; providerID: string; variant?: string };
-  version: string;
+  model?: ModelRefV2;
+  slug?: string;
+  projectID?: string;
+  version?: string;
   cost?: number;
   tokens?: TokenUsage;
   summary?: { additions: number; deletions: number; files: number };
-  /**
-   * Set while a revert is pending, meaning the session can be rolled forward
-   * again. Absent otherwise.
-   */
+  /** Set while a revert is staged, meaning the session can roll forward. */
   revertedAt?: number;
   time: TimeParts;
 }
 
+export interface SessionRevert {
+  messageID: string;
+  partID?: string;
+  snapshot?: unknown;
+  files?: FileDiff[];
+}
+
 // --- Messages -------------------------------------------------------------
+
+export type FinishReason =
+  | "stop"
+  | "length"
+  | "tool-calls"
+  | "content-filter"
+  | "error"
+  | "unknown";
+
+export interface PromptFileAttachment {
+  url: string;
+  mime?: string;
+  filename?: string;
+  [key: string]: unknown;
+}
+
+export interface PromptAgentAttachment {
+  name: string;
+  [key: string]: unknown;
+}
+
+export interface PromptSkillAttachment {
+  name: string;
+  [key: string]: unknown;
+}
+
+export interface MessageTimeV2 {
+  created: number;
+  firstToken?: number;
+  streamed?: number;
+  completed?: number;
+}
+
+export interface UserMessageV2 {
+  id: string;
+  time: MessageTimeV2;
+  type: "user";
+  text: string;
+  metadata?: Record<string, unknown>;
+  files?: PromptFileAttachment[];
+  agents?: PromptAgentAttachment[];
+  skills?: PromptSkillAttachment[];
+}
+
+export interface ToolContent {
+  type: string;
+  text?: string;
+  uri?: string;
+  mime?: string;
+  name?: string | null;
+  [key: string]: unknown;
+}
+
+export type ToolStateV2 =
+  | { status: "streaming"; input: string }
+  | { status: "running"; input: Record<string, unknown>; metadata: Record<string, unknown> }
+  | {
+      status: "completed";
+      input: Record<string, unknown>;
+      content: ToolContent[];
+      metadata?: Record<string, unknown>;
+    }
+  | {
+      status: "error";
+      input: Record<string, unknown>;
+      error: StructuredError;
+      content?: ToolContent[];
+      metadata?: Record<string, unknown>;
+    };
+
+export type AssistantContent =
+  | { type: "text"; text: string; native?: Record<string, unknown> }
+  | {
+      type: "reasoning";
+      text: string;
+      native?: Record<string, unknown>;
+      time?: { created: number; completed?: number };
+    }
+  | {
+      type: "tool";
+      id: string;
+      name: string;
+      executed?: boolean;
+      state: ToolStateV2;
+      time: { created: number; ran?: number; completed?: number };
+      native?: Record<string, unknown>;
+    };
+
+export interface AssistantMessageV2 {
+  id: string;
+  time: MessageTimeV2;
+  type: "assistant";
+  agent: string;
+  model: ModelRefV2;
+  content: AssistantContent[];
+  metadata?: Record<string, unknown>;
+  snapshot?: { start?: string; end?: string; files?: string[] };
+  finish?: FinishReason;
+  rawFinish?: string;
+  native?: Record<string, unknown>;
+  cost?: number;
+  tokens?: TokenUsageV2;
+  error?: StructuredError;
+  retry?: { attempt: number; at: number; error: StructuredError };
+}
+
+export interface ModelSwitchedV2 {
+  id: string;
+  time: MessageTimeV2;
+  type: "model-switched";
+  model: ModelRefV2;
+  previous?: ModelRefV2;
+}
+
+export interface AgentSwitchedV2 {
+  id: string;
+  time: MessageTimeV2;
+  type: "agent-switched";
+  agent: string;
+  previous?: string;
+}
+
+export interface LocationSwitchedV2 {
+  id: string;
+  time: MessageTimeV2;
+  type: "location-switched";
+  location: LocationPublicRef;
+  projectID?: string;
+  subpath?: string;
+  previous?: LocationPublicRef;
+}
+
+export interface SyntheticMessageV2 {
+  id: string;
+  time: MessageTimeV2;
+  type: "synthetic";
+  text: string;
+  description?: string;
+}
+
+export interface SystemMessageV2 {
+  id: string;
+  time: MessageTimeV2;
+  type: "system";
+  text: string;
+  description?: string;
+}
+
+export interface SkillMessageV2 {
+  id: string;
+  time: MessageTimeV2;
+  type: "skill";
+  skill: string;
+  name: string;
+  text: string;
+}
+
+export interface ShellOutputStream {
+  output: string;
+  cursor?: number;
+  size?: number;
+  truncated?: boolean;
+}
+
+export interface ShellMessageV2 {
+  id: string;
+  time: MessageTimeV2;
+  type: "shell";
+  shellID: string;
+  command: string;
+  status: string;
+  exit?: number;
+  output?: ShellOutputStream;
+}
+
+export interface CompactionMessageV2 {
+  id: string;
+  time: MessageTimeV2;
+  type: "compaction";
+  reason: string;
+  status: string;
+  text?: string;
+  model?: ModelRefV2;
+  native?: Record<string, unknown>;
+  cost?: number;
+  tokens?: TokenUsageV2;
+  error?: StructuredError;
+}
+
+export interface IdleMessageV2 {
+  id: string;
+  time: MessageTimeV2;
+  type: "idle";
+  outcome: string;
+  error?: StructuredError;
+}
+
+export type MessageV2 =
+  | AgentSwitchedV2
+  | ModelSwitchedV2
+  | LocationSwitchedV2
+  | UserMessageV2
+  | SyntheticMessageV2
+  | SystemMessageV2
+  | SkillMessageV2
+  | ShellMessageV2
+  | AssistantMessageV2
+  | CompactionMessageV2
+  | IdleMessageV2;
+
+// --- View messages --------------------------------------------------------
 
 export interface UserMessage {
   id: string;
-  sessionID: string;
+  sessionID?: string;
   role: "user";
   time: TimeParts;
-  agent: string;
-  model: ModelRef;
+  agent?: string;
+  model?: ModelRef;
+  text?: string;
   error?: MessageError;
 }
 
 export interface AssistantMessage {
   id: string;
-  sessionID: string;
+  sessionID?: string;
   role: "assistant";
-  parentID: string;
-  providerID: string;
-  modelID: string;
-  agent: string;
-  mode: string;
-  path: { cwd: string; root: string };
+  parentID?: string;
+  providerID?: string;
+  modelID?: string;
+  agent?: string;
+  mode?: string;
+  path?: { cwd: string; root: string };
   cost: number;
   tokens: TokenUsage;
   time: TimeParts;
+  /** Set by `session.step.ended`. */
+  finish?: string;
   error?: MessageError;
   summary?: boolean;
 }
@@ -83,7 +384,7 @@ export type MessageInfo = UserMessage | AssistantMessage;
 
 export interface MessageError {
   name: string;
-  data?: { message?: string; statusCode?: number; isRetryable?: boolean };
+  data?: { message: string };
 }
 
 // --- Parts ----------------------------------------------------------------
@@ -92,105 +393,68 @@ export interface BasePart {
   id: string;
   sessionID: string;
   messageID: string;
-  type: PartType;
-  synthetic?: boolean;
-  /**
-   * True while this part exists only as accumulated deltas, before the server
-   * sent the authoritative `message.part.updated`.
-   */
-  streaming?: boolean;
 }
 
 export interface TextPart extends BasePart {
   type: "text";
   text: string;
+  /** Local-only: true while the text is still being streamed. */
+  streaming?: boolean;
 }
 
 export interface ReasoningPart extends BasePart {
   type: "reasoning";
   text: string;
   time: TimeParts;
+  streaming?: boolean;
 }
 
 export type ToolStatus = "pending" | "running" | "completed" | "error";
 
 /**
- * Structured extras the server attaches to a tool call.
- *
- * These are not decoration. The tool's *input* says what was asked for; the
- * metadata says what came back in a form worth showing. An `edit` carries its
- * unified diff here, `glob`/`grep` carry match counts, `question` carries the
- * answers. Without them a completed tool call is just a name and a blob of
- * text.
- *
- * Declared as a loose record because the set differs per tool and grows with
- * opencode's versions; the readers below narrow it and tolerate absence.
+ * Structured extras the server attaches to a tool call. A side-effecting tool
+ * can report them alongside its `content`, which is why this is data rather
+ * than a rendered message.
  */
 export interface ToolMetadata {
-  /** `edit` — unified diff for the change. */
-  diff?: string;
-  /** `glob` — how many paths matched. */
-  count?: number;
-  /** `grep` — how many matches. */
-  matches?: number;
-  /** `websearch` — which search backend answered. */
-  provider?: string;
-  /** `question` — the answers, parallel to the questions that were asked. */
-  answers?: string[][];
-  /** `patch` — per-file patches applied together. */
-  files?: Array<{
-    filePath?: string;
-    relativePath?: string;
-    movePath?: string;
-    patch?: string;
-    additions?: number;
-    deletions?: number;
-    type?: string;
-  }>;
-  /** `todowrite` — the list, mirrored from the input for convenience. */
-  todos?: Todo[];
-  /** Set when a long list was cut short for display. */
+  diagnostics?: Record<string, unknown>;
   truncated?: boolean;
   [key: string]: unknown;
 }
 
 export type ToolState =
   | {
-      status: "pending" | "running";
+      status: "pending";
+      input?: Record<string, unknown>;
+    }
+  | {
+      status: "running";
       input?: Record<string, unknown>;
       title?: string;
-      time?: TimeParts;
       metadata?: ToolMetadata;
     }
   | {
       status: "completed";
-      input: Record<string, unknown>;
+      input?: Record<string, unknown>;
       output: string;
       title: string;
-      time: TimeParts;
       metadata?: ToolMetadata;
+      time: TimeParts;
     }
   | {
       status: "error";
       input?: Record<string, unknown>;
-      title?: string;
       error: string;
-      time?: TimeParts;
-      metadata?: ToolMetadata;
     };
 
 /**
  * A single entry in an agent's plan.
- *
- * `status` and `priority` are read from the server and can both be absent or
- * carry a value this build does not know about, so the narrowers below are
- * deliberately forgiving rather than a hard union.
  */
 export interface Todo {
-  content?: string;
-  status?: string;
-  priority?: string;
-  id?: string;
+  id: string;
+  content: string;
+  status: TodoStatus;
+  priority: TodoPriority;
 }
 
 export const TODO_STATUSES = ["pending", "in_progress", "completed", "cancelled"] as const;
@@ -203,13 +467,19 @@ export type TodoPriority = (typeof TODO_PRIORITIES)[number];
 export function normaliseTodo(raw: unknown): Todo | null {
   if (!raw || typeof raw !== "object") return null;
   const record = raw as Record<string, unknown>;
-  const content = typeof record.content === "string" ? record.content.trim() : "";
+  const content = typeof record.content === "string" ? record.content : null;
   if (!content) return null;
+  const status = TODO_STATUSES.includes(record.status as TodoStatus)
+    ? (record.status as TodoStatus)
+    : "pending";
+  const priority = TODO_PRIORITIES.includes(record.priority as TodoPriority)
+    ? (record.priority as TodoPriority)
+    : "medium";
   return {
+    id: typeof record.id === "string" ? record.id : content,
     content,
-    status: typeof record.status === "string" ? record.status : "pending",
-    priority: typeof record.priority === "string" ? record.priority : "medium",
-    id: typeof record.id === "string" ? record.id : undefined,
+    status,
+    priority,
   };
 }
 
@@ -232,7 +502,8 @@ export function todoProgress(todos: Todo[]): { done: number; total: number; acti
 
 /** Human-readable label for a tool call, falling back to its arguments. */
 export function toolTitle(tool: string, state: ToolState): string {
-  if (state.title) return state.title;
+  if (state.status === "running" && state.title) return state.title;
+  if (state.status === "completed" && state.title) return state.title;
   const input = state.input;
   if (input) {
     for (const key of ["command", "pattern", "filePath", "path", "query", "url", "description"]) {
@@ -243,12 +514,13 @@ export function toolTitle(tool: string, state: ToolState): string {
   return tool;
 }
 
-
 export interface ToolPart extends BasePart {
   type: "tool";
   callID: string;
   tool: string;
   state: ToolState;
+  /** Raw JSON accumulated while a v2 tool input is still streaming. */
+  inputRaw?: string;
 }
 
 export interface StepStartPart extends BasePart {
@@ -285,6 +557,8 @@ export interface RetryPart extends BasePart {
 export interface CompactionPart extends BasePart {
   type: "compaction";
   auto: boolean;
+  /** Summary text, present once compaction ends. */
+  text?: string;
 }
 
 export interface SubtaskPart extends BasePart {
@@ -338,85 +612,506 @@ export interface FileDiff {
   patch?: string;
 }
 
+export interface FileStatus {
+  file?: string;
+  path?: string;
+  status?: string;
+  additions?: number;
+  deletions?: number;
+  [key: string]: unknown;
+}
+
 // --- Permissions ----------------------------------------------------------
 
-/**
- * opencode exposes two permission generations. `permission.asked` is the
- * original shape; `permission.v2.asked` is the current one. Both are
- * normalised into `PendingPermission` so the UI has a single thing to render.
- */
 export type PermissionReply = "once" | "always" | "reject";
 
+export namespace Permission {
+  export type Decision = PermissionReply;
+
+  /** v2 `Permission.Request`. The reply body field is `decision`. */
+  export interface Request {
+    id: string;
+    sessionID: string;
+    action: string;
+    resources: string[];
+    save?: string[];
+    metadata?: Record<string, unknown>;
+    source?: { type: string; messageID: string; id: string };
+    message?: string;
+  }
+}
+
+/**
+ * The UI's single permission shape. `version` is retained so the card can
+ * label itself; v2 is the only generation the current server speaks.
+ */
 export interface PendingPermission {
-  /** Stable across both generations; the id the reply endpoint expects. */
   id: string;
   sessionID: string;
-  /** v1 `permission`, v2 `action`. */
   action: string;
-  /** v1 `patterns`, v2 `resources`. */
   resources: string[];
-  /** Actions that "always allow" would persist, when the server supplies them. */
   save?: string[];
   tool?: { messageID: string; callID: string };
-  /** Which event produced this, so the card can label itself accurately. */
   version: 1 | 2;
   /** Local-only: when Halyard first learned about it, for stable ordering. */
   askedAt: number;
 }
 
-export interface PermissionAskedV1 {
-  id: string;
-  sessionID: string;
-  permission: string;
-  patterns: string[];
-  always?: string[];
-  tool?: { messageID: string; callID: string };
-}
+// --- Forms (v2 replaces v1 `question`) ------------------------------------
 
-export interface PermissionAskedV2 {
-  id: string;
-  sessionID: string;
-  action: string;
-  resources: string[];
-  save?: string[];
-  source?: { type: string; messageID: string; callID: string };
-}
+export namespace Form {
+  export interface Option {
+    value: string;
+    label: string;
+    description?: string;
+  }
 
-// --- Events ---------------------------------------------------------------
+  export interface When {
+    key: string;
+    op: "eq" | "neq";
+    value: string | number | boolean;
+  }
 
-/** Every event the server emits is `{ id, type, properties }`. */
-export interface ServerEvent<T = Record<string, unknown>> {
-  id: string;
-  type: string;
-  properties: T;
-}
+  interface FieldBase {
+    key: string;
+    title?: string;
+    description?: string;
+    required?: boolean;
+    hidden?: boolean;
+    when?: When;
+  }
 
-export interface Events {
-  "server.connected": Record<string, never>;
-  "server.heartbeat": Record<string, never>;
-  "session.updated": { sessionID: string; info: Session };
-  "session.deleted": { sessionID: string };
-  "message.updated": { sessionID: string; info: MessageInfo };
-  "message.removed": { sessionID: string; messageID: string };
-  "message.part.updated": { sessionID: string; part: Part };
-  "message.part.delta": {
+  export interface StringField extends FieldBase {
+    type: "string";
+    format?: "email" | "uri" | "date" | "date-time";
+    minLength?: number;
+    maxLength?: number;
+    pattern?: string;
+    placeholder?: string;
+    default?: string;
+    options?: Option[];
+    custom?: boolean;
+  }
+
+  export interface NumberField extends FieldBase {
+    type: "number";
+    minimum?: number;
+    maximum?: number;
+    default?: number;
+  }
+
+  export interface IntegerField extends FieldBase {
+    type: "integer";
+    minimum?: number;
+    maximum?: number;
+    default?: number;
+  }
+
+  export interface BooleanField extends FieldBase {
+    type: "boolean";
+    default?: boolean;
+  }
+
+  export interface EnumField extends FieldBase {
+    type: "enum";
+    options: Option[];
+    default?: string;
+    custom?: boolean;
+  }
+
+  export interface MultiselectField extends FieldBase {
+    type: "multiselect";
+    options: Option[];
+    minItems?: number;
+    maxItems?: number;
+    custom?: boolean;
+    default?: string[];
+  }
+
+  export interface ExternalField extends FieldBase {
+    type: "external";
+    url: string;
+    title?: string;
+    description?: string;
+  }
+
+  export type Field =
+    | StringField
+    | NumberField
+    | IntegerField
+    | BooleanField
+    | EnumField
+    | MultiselectField
+    | ExternalField;
+
+  export type Value = string | number | boolean | "Infinity" | "-Infinity" | "NaN" | string[];
+
+  export type Answer = Record<string, Value>;
+
+  export interface Info {
+    id: string;
     sessionID: string;
-    messageID: string;
-    partID: string;
-    field: string;
-    delta: string;
-  };
-  "session.status": { sessionID: string; status: SessionStatus };
-  "session.idle": { sessionID: string };
-  "session.error": { sessionID: string; error: MessageError };
-  "session.diff": { sessionID: string; diff: FileDiff[] };
-  /** The agent's plan changed. Carries the whole list, not a delta. */
-  "todo.updated": { sessionID: string; todos: unknown[] };
-  /** A part was retracted by the server rather than edited. */
-  "message.part.removed": { sessionID: string; messageID: string; partID: string };
-  "permission.replied": { sessionID: string; requestID: string; reply: string };
-  [key: string]: { sessionID?: string } & Record<string, unknown>;
-
+    title: string;
+    fields: Field[];
+    metadata?: Record<string, unknown>;
+  }
 }
 
-export type EventType = keyof Events & string;
+export type FormValue = Form.Value;
+
+// --- Catalogue / system info ----------------------------------------------
+
+export interface ProviderInfo {
+  id: string;
+  name: string;
+  /** v2 lists no models here; they arrive from `GET /api/model`. */
+  models?: Record<string, unknown>;
+  /**
+   * `enabled` and `auto` are usable; `disabled` is the user turning it off.
+   * `auto` means the server has everything it needs and enables it by itself.
+   */
+  activation?: "auto" | "enabled" | "disabled";
+  integrationID?: string;
+  canonical?: string;
+  package?: string;
+  settings?: Record<string, unknown>;
+  headers?: Record<string, string>;
+  [key: string]: unknown;
+}
+
+export interface ModelInfo {
+  id: string;
+  modelID: string;
+  providerID: string;
+  name: string;
+  type?: string;
+  family?: string;
+  status?: string;
+  release_date?: string;
+  /** v2 sends an array of price tiers; the untiered entry is the base price. */
+  cost?: ModelCostV2 | ModelCostV2[];
+  limit?: ModelLimitV2;
+  capabilities?: ModelCapabilitiesV2;
+  enabled?: boolean;
+  options?: Record<string, unknown>;
+  [key: string]: unknown;
+}
+
+export interface ModelCostV2 {
+  tier?: { type: "context"; size: number };
+  input?: number;
+  output?: number;
+  cache?: { read?: number; write?: number };
+  [key: string]: unknown;
+}
+
+export interface ModelLimitV2 {
+  context?: number;
+  output?: number;
+  [key: string]: unknown;
+}
+
+export interface ModelCapabilitiesV2 {
+  reasoning?: boolean;
+  attachment?: boolean;
+  toolcall?: boolean;
+  tools?: boolean;
+  temperature?: boolean;
+  /** v2 sends media types as `["text", "image", ...]`; older builds used flags. */
+  input?:
+    | string[]
+    | { text?: boolean; image?: boolean; audio?: boolean; video?: boolean; pdf?: boolean };
+  output?:
+    | string[]
+    | { text?: boolean; image?: boolean; audio?: boolean; video?: boolean; pdf?: boolean };
+  [key: string]: unknown;
+}
+
+export interface AgentInfoV2 {
+  name: string;
+  description?: string;
+  mode?: string;
+  model?: ModelRefV2;
+  prompt?: string;
+  tools?: Record<string, boolean>;
+  [key: string]: unknown;
+}
+
+export interface SkillInfo {
+  id?: string;
+  name: string;
+  description?: string;
+  location?: string;
+  [key: string]: unknown;
+}
+
+export interface IntegrationMethod {
+  type: string;
+  id: string;
+  label?: string;
+  form?: Form.Field[];
+  [key: string]: unknown;
+}
+
+export interface IntegrationInfo {
+  id: string;
+  name: string;
+  methods: IntegrationMethod[];
+  connections: unknown[];
+  [key: string]: unknown;
+}
+
+export interface IntegrationAttemptEncoded {
+  attemptID: string;
+  url: string;
+  instructions?: string;
+  mode: "auto" | "code" | string;
+  time: { created: number; expires: number };
+  paste?: boolean;
+}
+
+export interface IntegrationAttemptStatus {
+  status: string;
+  error?: string;
+  [key: string]: unknown;
+}
+
+export type CredentialValue =
+  | { type: "api"; key: string; label?: string }
+  | { type: "oauth"; access: string; refresh: string; expires: number; label?: string };
+
+export interface CredentialEntry {
+  id: string;
+  integrationID: string;
+  value: CredentialValue;
+  active: boolean;
+  time: { created: number; updated?: number };
+  [key: string]: unknown;
+}
+
+export interface McpServer {
+  name: string;
+  status?: string;
+  enabled?: boolean;
+  [key: string]: unknown;
+}
+
+/**
+ * One config source returned by `GET /api/config`.
+ *
+ * The endpoint returns a bare array of these (not a `{data}` envelope); each
+ * entry is either an on-disk document with its decoded contents or a config
+ * directory contributing defaults.
+ */
+export type ConfigEntry =
+  | { type: "document"; path?: string | null; info: Record<string, unknown> }
+  | { type: "directory"; path: string };
+
+export interface InboxUser {
+  id: string;
+  sessionID: string;
+  time: { created: number };
+  type: "user";
+  payload: { text: string; files?: PromptFileAttachment[]; agents?: PromptAgentAttachment[] };
+  delivery?: string;
+}
+
+export interface InboxCompaction {
+  id: string;
+  sessionID: string;
+  time: { created: number };
+  type: "compaction";
+  payload?: Record<string, unknown>;
+  delivery?: string;
+}
+
+// --- Adapters: wire -> view ----------------------------------------------
+
+function normaliseTokens(tokens: TokenUsageV2 | TokenUsage | undefined): TokenUsage {
+  return {
+    input: tokens?.input ?? 0,
+    output: tokens?.output ?? 0,
+    reasoning: tokens?.reasoning ?? 0,
+    cache: tokens?.cache
+      ? { read: tokens.cache.read ?? 0, write: tokens.cache.write ?? 0 }
+      : undefined,
+  };
+}
+
+export function toSessionView(info: SessionInfoV2): Session {
+  return {
+    id: info.id,
+    title: info.title ?? "",
+    directory: info.location?.directory ?? "",
+    parentID: info.parentID,
+    archived: info.archived,
+    agent: info.agent,
+    model: info.model,
+    slug: info.slug,
+    projectID: info.projectID,
+    version: info.version,
+    cost: info.cost,
+    tokens: normaliseTokens(info.tokens),
+    time: { created: info.time.created, updated: info.time.updated },
+  };
+}
+
+/** Parse a streamed tool input without letting a partial JSON throw. */
+export function parseToolInput(raw: string | undefined): Record<string, unknown> | undefined {
+  if (!raw) return undefined;
+  try {
+    const parsed: unknown = JSON.parse(raw);
+    return parsed && typeof parsed === "object" ? (parsed as Record<string, unknown>) : undefined;
+  } catch {
+    return undefined;
+  }
+}
+
+function joinToolContent(content: ToolContent[] | undefined): string {
+  if (!content) return "";
+  return content
+    .filter((entry) => entry.type === "text" && typeof entry.text === "string")
+    .map((entry) => entry.text as string)
+    .join("\n");
+}
+
+function asMetadata(metadata: Record<string, unknown> | undefined): ToolMetadata | undefined {
+  return metadata as ToolMetadata | undefined;
+}
+
+function toolStateOf(state: ToolStateV2, created: number): ToolState {
+  switch (state.status) {
+    case "streaming":
+      return { status: "pending", input: parseToolInput(state.input) };
+    case "running":
+      return { status: "running", input: state.input, metadata: asMetadata(state.metadata) };
+    case "completed":
+      return {
+        status: "completed",
+        input: state.input,
+        output: joinToolContent(state.content),
+        title: "",
+        metadata: asMetadata(state.metadata),
+        time: { created },
+      };
+    case "error":
+      return {
+        status: "error",
+        input: state.input,
+        error: state.error?.message ?? "tool failed",
+      };
+  }
+}
+
+function assistantParts(message: AssistantMessageV2): Part[] {
+  const parts: Part[] = [];
+  message.content.forEach((item, ordinal) => {
+    if (item.type === "text") {
+      parts.push({
+        id: `${message.id}:${ordinal}`,
+        sessionID: "",
+        messageID: message.id,
+        type: "text",
+        text: item.text,
+      });
+    } else if (item.type === "reasoning") {
+      parts.push({
+        id: `${message.id}:${ordinal}`,
+        sessionID: "",
+        messageID: message.id,
+        type: "reasoning",
+        text: item.text,
+        time: {
+          created: item.time?.created ?? message.time.created,
+          completed: item.time?.completed,
+        },
+      });
+    } else {
+      parts.push({
+        id: item.id,
+        sessionID: "",
+        messageID: message.id,
+        type: "tool",
+        callID: item.id,
+        tool: item.name,
+        state: toolStateOf(item.state, item.time?.created ?? message.time.created),
+      });
+    }
+  });
+  return parts;
+}
+
+function toMessageEntry(message: MessageV2): { info: MessageInfo; parts: Part[] } | null {
+  if (message.type === "user") {
+    const info: UserMessage = {
+      id: message.id,
+      role: "user",
+      time: { created: message.time.created },
+      text: message.text,
+    };
+    return {
+      info,
+      parts: [
+        {
+          id: `${message.id}:0`,
+          sessionID: "",
+          messageID: message.id,
+          type: "text",
+          text: message.text,
+        },
+      ],
+    };
+  }
+
+  if (message.type === "assistant") {
+    const info: AssistantMessage = {
+      id: message.id,
+      role: "assistant",
+      agent: message.agent,
+      providerID: message.model?.providerID,
+      modelID: message.model?.id,
+      cost: message.cost ?? 0,
+      tokens: normaliseTokens(message.tokens),
+      time: { created: message.time.created, completed: message.time.completed },
+      finish: message.finish,
+      error: message.error
+        ? { name: message.error.type, data: { message: message.error.message } }
+        : undefined,
+    };
+    return { info, parts: assistantParts(message) };
+  }
+
+  // Everything else (switchers, idle markers, shell/system/skill notices,
+  // compaction records) carries no transcript to render. Events drive the
+  // thread's status; history only needs the two conversational message kinds.
+  return null;
+}
+
+/**
+ * Adapt a v2 history array into the view's `{info, parts}` entries, dropping
+ * messages that exist purely to move server-side state.
+ */
+export function toMessageEntries(messages: MessageV2[]): Array<{ info: MessageInfo; parts: Part[] }> {
+  const entries: Array<{ info: MessageInfo; parts: Part[] }> = [];
+  for (const message of messages) {
+    const entry = toMessageEntry(message);
+    if (entry) entries.push(entry);
+  }
+  return entries;
+}
+
+/** Adapt a v2 permission request into the UI's single shape. */
+export function toPendingPermission(request: Permission.Request): PendingPermission {
+  return {
+    id: request.id,
+    sessionID: request.sessionID,
+    action: request.action,
+    resources: Array.isArray(request.resources) ? request.resources : [],
+    save: Array.isArray(request.save) ? request.save : undefined,
+    tool: request.source
+      ? { messageID: request.source.messageID, callID: request.source.id }
+      : undefined,
+    version: 2,
+    askedAt: Date.now(),
+  };
+}

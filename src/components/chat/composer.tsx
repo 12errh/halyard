@@ -50,7 +50,7 @@ export function Composer({
   onRedo,
   onCompact,
 }: {
-  onSubmit(payload: ComposerSubmit): void;
+  onSubmit(payload: ComposerSubmit): void | Promise<void>;
   onAbort(): void;
   busy: boolean;
   disabled?: boolean;
@@ -77,6 +77,7 @@ export function Composer({
   const [highlight, setHighlight] = useState(0);
   const [attachments, setAttachments] = useState<Attachment[]>([]);
   const [rejections, setRejections] = useState<Rejection[]>([]);
+  const [submitError, setSubmitError] = useState<string | null>(null);
   const [dragging, setDragging] = useState(false);
   const [picker, setPicker] = useState(false);
   const catalogue = listSkills();
@@ -197,10 +198,19 @@ export function Composer({
     [],
   );
 
-  const submit = useCallback(() => {
+  const submit = useCallback(async () => {
     const text = value.trim();
     if ((!text && attachments.length === 0) || disabled || busy) return;
-    onSubmit({ text, attachments });
+    // Keep the payload until the caller accepts it. Clearing first is what made
+    // a rejected prompt (401, server down) look like the message vanished.
+    const payload = { text, attachments };
+    setSubmitError(null);
+    try {
+      await onSubmit(payload);
+    } catch (error) {
+      setSubmitError(error instanceof Error ? error.message : String(error));
+      return;
+    }
     setValue("");
     setAttachments([]);
     setItems([]);
@@ -252,6 +262,15 @@ export function Composer({
             not input, and the composer should not look crowded when it
             appears. */}
         {plan && <div className="mb-2">{plan}</div>}
+        {submitError && (
+          <div
+            role="alert"
+            className="mb-2 flex items-start gap-2 rounded-[var(--radius-card)] border border-danger/30 bg-danger/10 px-3 py-2 text-[0.76rem] text-danger"
+          >
+            <AlertTriangle size={13} className="mt-0.5 shrink-0" />
+            <span className="break-words">Could not send: {submitError}</span>
+          </div>
+        )}
         <div
           onDragOver={(event) => {
             event.preventDefault();

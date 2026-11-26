@@ -1,6 +1,6 @@
 [package]
 name = "halyard"
-version = "0.1.0-beta.1"
+version = "0.2.0"
 description = "A native desktop shell for the opencode coding agent"
 authors = ["Halyard"]
 edition = "2024"
@@ -26,6 +26,10 @@ tauri-plugin-single-instance = "2"
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 thiserror = "2"
+# Builds the `Authorization: Basic` header the v2 server demands on every route.
+base64 = "0.22"
+# Generates the per-server OPENCODE_PASSWORD; the v4 feature pulls in `rng`.
+uuid = { version = "1", features = ["v4"] }
 tokio = { version = "1", features = ["process", "io-util", "time", "sync", "rt", "macros"] }
 tauri-plugin-fs = "2.7.0"
 # Ships signed update artifacts and replaces the running app in place. Only
@@ -44,7 +48,6 @@ tempfile = "3"
 # real algorithm rather than a lookalike. Both are dev-only: shipping them
 # would put signing primitives in the binary for no reason.
 minisign-verify = "0.2"
-base64 = "0.22"
 
 # Read the optimization guideline for more details: https://tauri.app/concept/size/#cargo-configuration
 [profile.release]

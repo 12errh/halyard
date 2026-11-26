@@ -60,8 +60,9 @@ function toolIcon(icon: ToolView["icon"]): ReactNode {
 }
 
 function duration(state: ToolState): string {
-  const start = state.time?.created;
-  const end = state.time?.completed ?? (state.status === "running" ? Date.now() : undefined);
+  if (state.status !== "completed") return "";
+  const start = state.time.created;
+  const end = state.time.completed ?? Date.now();
   if (!start || !end || end <= start) return "";
   const ms = end - start;
   if (ms < 1000) return `${ms}ms`;
@@ -93,7 +94,10 @@ export function ToolRow({ part }: { part: ToolPart }) {
   if (view.todos?.length) {
     return (
       <div className="my-1.5">
-        <TodoBlock todos={view.todos} truncated={state.metadata?.truncated} />
+        <TodoBlock
+          todos={view.todos}
+          truncated={"metadata" in state ? state.metadata?.truncated : undefined}
+        />
       </div>
     );
   }

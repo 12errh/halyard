@@ -96,16 +96,16 @@ function fromRust(status: ServerStatus): ServerPhase {
       return { kind: "stopped" };
     case "starting":
       return { kind: "starting" };
-    case "ready":
-      return {
-        kind: "ready",
-        info: {
-          url: status.url,
-          port: status.port,
-          version: status.version,
-          project: status.project,
-        },
+    case "ready": {
+      const info: ServerInfo = {
+        url: status.url,
+        port: status.port,
+        version: status.version,
+        password: status.password,
+        project: status.project,
       };
+      return { kind: "ready", info };
+    }
     case "failed":
       return { kind: "failed", message: status.message };
   }

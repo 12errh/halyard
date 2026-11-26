@@ -49,6 +49,7 @@ vi.mock("@/lib/tauri", () => ({
       url: "http://127.0.0.1:4096",
       port: 4096,
       version: "1.18.35",
+      password: "test",
       project: "/tmp/project",
     }),
     stopServer: vi.fn().mockResolvedValue(undefined),

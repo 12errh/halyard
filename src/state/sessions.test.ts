@@ -14,7 +14,7 @@ function session(id: string, title: string, updated: number, parentID?: string):
     projectID: "p",
     directory: "/tmp",
     title,
-    version: "1.18.35",
+    version: "2.4.2",
     time: { created: updated, updated },
     ...(parentID ? { parentID } : {}),
   };
@@ -215,7 +215,14 @@ describe("session store: project scoping", () => {
     useSessions.getState().setDirectory("/home/me/app");
     useSessions.getState().ingest({
       type: "session.created",
-      properties: { info: scoped("/home/me/elsewhere", "theirs") },
+      data: {
+        sessionID: "theirs",
+        projectID: "p",
+        location: { directory: "/home/me/elsewhere" },
+        slug: "theirs",
+        version: "2.4.2",
+        title: "Theirs",
+      },
     } as never);
     expect(useSessions.getState().sessions).toEqual([]);
   });

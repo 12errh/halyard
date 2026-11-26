@@ -54,6 +54,20 @@ describe("Composer", () => {
     await waitFor(() => expect(box).toHaveValue(""));
   });
 
+  it("keeps the text and shows the error when sending fails", async () => {
+    const user = userEvent.setup();
+    const onSubmit = vi.fn().mockRejectedValue(new Error("401 Unauthorized"));
+    const { box } = setup({ onSubmit });
+
+    await user.type(box, "do the thing");
+    await user.keyboard("{Enter}");
+
+    await waitFor(() =>
+      expect(screen.getByRole("alert")).toHaveTextContent("401 Unauthorized"),
+    );
+    expect(box).toHaveValue("do the thing");
+  });
+
   it("does not send whitespace only", async () => {
     const user = userEvent.setup();
     const { onSubmit, box } = setup();

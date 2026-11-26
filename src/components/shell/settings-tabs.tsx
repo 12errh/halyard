@@ -1,4 +1,4 @@
-import { useMemo, useState, type ReactNode } from "react";
+import { useEffect, useMemo, useState, type ReactNode } from "react";
 import { AnimatePresence, motion } from "motion/react";
 import {
   AlertTriangle,
@@ -10,7 +10,6 @@ import {
   RefreshCw,
   Search,
   Trash2,
-  Unplug,
   Upload,
 } from "lucide-react";
 import { save as saveDialog } from "@tauri-apps/plugin-dialog";
@@ -19,9 +18,15 @@ import { Button } from "@/components/ui/button";
 import { Input, Textarea } from "@/components/ui/input";
 import { Badge, Switch } from "@/components/ui/primitives";
 import { Empty, Group } from "./settings-groups";
-import { SkeletonBlock, SkeletonCard, SkeletonList, SkeletonRow } from "@/components/ui/skeleton";
+import { SkeletonBlock, SkeletonCard, SkeletonRow } from "@/components/ui/skeleton";
 import { addCustomAgent, addCustomModel, removeCustomAgent } from "@/actions/config-write";
 import { formatContext } from "@/lib/opencode/models";
+import type {
+  CredentialEntry,
+  IntegrationAttemptEncoded,
+  IntegrationInfo,
+  IntegrationMethod,
+} from "@/lib/opencode/types";
 import { allModels, useSystem, type McpState } from "@/state/system";
 import { CONFIG_SECTIONS, describeValue, getPath, useSettings } from "@/state/settings";
 import { useMode } from "@/state/mode";
@@ -267,14 +272,29 @@ export function AppearanceTab() {
 export function ProvidersTab() {
   const providers = useSystem((s) => s.providers);
   const connected = useSystem((s) => s.connected);
-  const authMethods = useSystem((s) => s.authMethods);
+  const integrations = useSystem((s) => s.integrations);
+  const credentials = useSystem((s) => s.credentials);
   const client = useSystem((s) => s.client);
   const [query, setQuery] = useState("");
   const [onlyConnected, setOnlyConnected] = useState(false);
-  const [editing, setEditing] = useState<{ id: string; label: string; oauth: boolean } | null>(null);
+  const [target, setTarget] = useState<{ integration: IntegrationInfo; method: IntegrationMethod } | null>(
+    null,
+  );
   const [secret, setSecret] = useState("");
+  const [code, setCode] = useState("");
+  const [attempt, setAttempt] = useState<{
+    integration: IntegrationInfo;
+    attempt: IntegrationAttemptEncoded;
+  } | null>(null);
   const [busy, setBusy] = useState(false);
   const [notice, setNotice] = useState<{ kind: "ok" | "error"; text: string } | null>(null);
+
+  const refresh = async () => {
+    await Promise.all([
+      useSystem.getState().refreshIntegrations(),
+      useSystem.getState().refreshCatalogue(),
+    ]);
+  };
 
   const rows = useMemo(() => {
     const needle = query.trim().toLowerCase();
@@ -288,16 +308,16 @@ export function ProvidersTab() {
       });
   }, [providers, connected, query, onlyConnected]);
 
-  const submit = async () => {
-    if (!client || !editing) return;
+  const connectKey = async () => {
+    if (!client || !target) return;
     setBusy(true);
     setNotice(null);
     try {
-      await client.setAuth(editing.id, editing.oauth ? "oauth" : "api", secret);
+      await client.connectIntegrationKey(target.integration.id, { key: secret.trim() });
+      await refresh();
+      setNotice({ kind: "ok", text: `Connected ${target.integration.name}` });
       setSecret("");
-      setEditing(null);
-      await useSystem.getState().refreshCatalogue();
-      setNotice({ kind: "ok", text: `Connected ${editing.id}` });
+      setTarget(null);
     } catch (error) {
       setNotice({ kind: "error", text: (error as Error).message });
     } finally {
@@ -305,13 +325,92 @@ export function ProvidersTab() {
     }
   };
 
-  const disconnect = async (id: string) => {
+  const startOauth = async () => {
+    if (!client || !target) return;
+    setBusy(true);
+    setNotice(null);
+    try {
+      const started = await client.connectIntegrationOauth(target.integration.id, {
+        methodID: target.method.id,
+      });
+      setAttempt({ integration: target.integration, attempt: started });
+      setCode("");
+    } catch (error) {
+      setNotice({ kind: "error", text: (error as Error).message });
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  // Poll while an OAuth attempt is open. opencode reports completion out of
+  // band, so the dialog waits on the attempt rather than on a callback.
+  useEffect(() => {
+    if (!client || !attempt) return;
+    let cancelled = false;
+    const handle = window.setInterval(() => {
+      void (async () => {
+        try {
+          const next = await client.oauthStatus(
+            attempt.integration.id,
+            attempt.attempt.attemptID,
+          );
+          if (cancelled) return;
+          if (next.status === "complete") {
+            setAttempt(null);
+            setTarget(null);
+            await refresh();
+            setNotice({ kind: "ok", text: `Connected ${attempt.integration.name}` });
+          } else if (next.status === "failed" || next.status === "expired") {
+            setAttempt(null);
+            setNotice({ kind: "error", text: next.error ?? `Authorization ${next.status}` });
+          }
+        } catch {
+          // A transient failure is not an answer; keep polling until expiry.
+        }
+      })();
+    }, 2000);
+    return () => {
+      cancelled = true;
+      window.clearInterval(handle);
+    };
+  }, [client, attempt]);
+
+  const finishOauth = async () => {
+    if (!client || !attempt) return;
+    setBusy(true);
+    try {
+      await client.completeOauth(
+        attempt.integration.id,
+        attempt.attempt.attemptID,
+        code.trim() || undefined,
+      );
+    } catch (error) {
+      setNotice({ kind: "error", text: (error as Error).message });
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  const activate = async (entry: CredentialEntry) => {
     if (!client) return;
     setBusy(true);
     try {
-      await client.removeAuth(id);
-      await useSystem.getState().refreshCatalogue();
-      setNotice({ kind: "ok", text: `Disconnected ${id}` });
+      await client.activateCredential(entry.id);
+      await refresh();
+    } catch (error) {
+      setNotice({ kind: "error", text: (error as Error).message });
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  const removeCredential = async (entry: CredentialEntry) => {
+    if (!client) return;
+    setBusy(true);
+    try {
+      await client.deleteCredential(entry.id);
+      await refresh();
+      setNotice({ kind: "ok", text: "Credential removed" });
     } catch (error) {
       setNotice({ kind: "error", text: (error as Error).message });
     } finally {
@@ -323,7 +422,7 @@ export function ProvidersTab() {
     <div>
       {notice && <Notice kind={notice.kind}>{notice.text}</Notice>}
 
-      <Group label="Connected" hint={`${connected.length} of ${providers.length}`}>
+      <Group label="Connected" hint={`${connected.length} of ${providers.length} providers active`}>
         <div className="flex flex-wrap gap-1.5">
           {connected.map((id) => (
             <Badge key={id} tone="good">
@@ -331,6 +430,114 @@ export function ProvidersTab() {
             </Badge>
           ))}
         </div>
+      </Group>
+
+      <Group label="Integrations" hint="Credentials live in opencode, never in Halyard's settings.">
+        {integrations.length === 0 ? (
+          <Empty>No integrations available.</Empty>
+        ) : (
+          <div className="overflow-hidden rounded-[var(--radius-card)] border border-line">
+            {integrations.map((integration, index) => {
+              const active = credentials.find(
+                (entry) => entry.integrationID === integration.id && entry.active,
+              );
+              return (
+                <div
+                  key={integration.id}
+                  className={cn(
+                    "flex items-center gap-2 px-2.5 py-1.5",
+                    index > 0 && "border-t border-line/60",
+                  )}
+                >
+                  <span className="min-w-0 flex-1">
+                    <span className="block truncate text-[0.82rem] text-ink">{integration.name}</span>
+                    <span className="block truncate font-mono text-[0.66rem] text-ink-ghost">
+                      {integration.id}
+                    </span>
+                  </span>
+                  {active ? <Badge tone="good">connected</Badge> : null}
+                  <div className="flex shrink-0 items-center gap-1">
+                    {integration.methods.map((method) => {
+                      const oauth = method.type === "oauth";
+                      return (
+                        <Button
+                          key={method.id}
+                          size="sm"
+                          variant={oauth ? "ghost" : "secondary"}
+                          disabled={busy || attempt !== null}
+                          onClick={() => {
+                            setTarget({ integration, method });
+                            setAttempt(null);
+                            setSecret("");
+                            setCode("");
+                            setNotice(null);
+                          }}
+                        >
+                          {oauth ? <LogIn size={11} /> : <KeyRound size={11} />}
+                          {method.label ?? (oauth ? "OAuth" : "API key")}
+                        </Button>
+                      );
+                    })}
+                  </div>
+                </div>
+              );
+            })}
+          </div>
+        )}
+      </Group>
+
+      <Group label="Credentials" hint={`${credentials.length} stored`}>
+        {credentials.length === 0 ? (
+          <Empty>No credentials stored.</Empty>
+        ) : (
+          <div className="overflow-hidden rounded-[var(--radius-card)] border border-line">
+            {credentials.map((entry, index) => {
+              const label = entry.value.label ?? (entry.value.type === "api" ? "API key" : "OAuth");
+              const integration =
+                integrations.find((candidate) => candidate.id === entry.integrationID)?.name ??
+                entry.integrationID;
+              return (
+                <div
+                  key={entry.id}
+                  className={cn(
+                    "flex items-center gap-2 px-2.5 py-1.5",
+                    index > 0 && "border-t border-line/60",
+                  )}
+                >
+                  <span className="min-w-0 flex-1">
+                    <span className="block truncate text-[0.82rem] text-ink">{label}</span>
+                    <span className="block truncate font-mono text-[0.66rem] text-ink-ghost">
+                      {integration}
+                    </span>
+                  </span>
+                  <Badge tone={entry.active ? "good" : "neutral"}>
+                    {entry.active ? "active" : "inactive"}
+                  </Badge>
+                  {!entry.active && (
+                    <Button
+                      size="sm"
+                      variant="ghost"
+                      disabled={busy}
+                      aria-label={`Activate credential ${label}`}
+                      onClick={() => void activate(entry)}
+                    >
+                      Use
+                    </Button>
+                  )}
+                  <Button
+                    size="sm"
+                    variant="ghost"
+                    disabled={busy}
+                    aria-label={`Delete credential ${label}`}
+                    onClick={() => void removeCredential(entry)}
+                  >
+                    <Trash2 size={11} />
+                  </Button>
+                </div>
+              );
+            })}
+          </div>
+        )}
       </Group>
 
       <Group label="All providers" hint={`${rows.length} shown`}>
@@ -349,88 +556,102 @@ export function ProvidersTab() {
           {rows.length === 0 ? (
             <Empty>No providers match.</Empty>
           ) : (
-            rows.map((provider) => {
-              const isConnected = connected.includes(provider.id);
-              const methods = authMethods[provider.id] ?? [];
-              const api = methods.find((m) => m.type === "api");
-              const oauth = methods.find((m) => m.type === "oauth");
-
-              return (
-                <div
-                  key={provider.id}
-                  className="group flex items-center gap-2 border-b border-line/60 px-2.5 py-1.5 transition-colors last:border-b-0 hover:bg-raised/40"
-                >
-                  <span className="min-w-0 flex-1">
-                    <span className="block truncate text-[0.82rem] text-ink">{provider.name}</span>
-                    <span className="block truncate font-mono text-[0.66rem] text-ink-ghost">
-                      {provider.id} · {Object.keys(provider.models).length} models
-                    </span>
+            rows.map((provider) => (
+              <div
+                key={provider.id}
+                className="flex items-center gap-2 border-b border-line/60 px-2.5 py-1.5 last:border-b-0"
+              >
+                <span className="min-w-0 flex-1">
+                  <span className="block truncate text-[0.82rem] text-ink">{provider.name}</span>
+                  <span className="block truncate font-mono text-[0.66rem] text-ink-ghost">
+                    {provider.id} · {Object.keys(provider.models).length} models
                   </span>
-
-                  {isConnected ? (
-                    <>
-                      <Badge tone="good">connected</Badge>
-                      <Button size="sm" variant="ghost" disabled={busy} onClick={() => void disconnect(provider.id)}>
-                        <Unplug size={11} />
-                        Disconnect
-                      </Button>
-                    </>
-                  ) : (
-                    <div className="flex shrink-0 items-center gap-1">
-                      {api && (
-                        <Button
-                          size="sm"
-                          onClick={() => {
-                            setEditing({ id: provider.id, label: api.label, oauth: false });
-                            setSecret("");
-                            setNotice(null);
-                          }}
-                        >
-                          <KeyRound size={11} />
-                          API key
-                        </Button>
-                      )}
-                      {oauth && (
-                        <Button
-                          size="sm"
-                          variant="ghost"
-                          onClick={() => {
-                            setEditing({ id: provider.id, label: oauth.label, oauth: true });
-                            setSecret("");
-                            setNotice(null);
-                          }}
-                        >
-                          <LogIn size={11} />
-                          OAuth
-                        </Button>
-                      )}
-                    </div>
-                  )}
-                </div>
-              );
-            })
+                </span>
+                {connected.includes(provider.id) && <Badge tone="good">connected</Badge>}
+              </div>
+            ))
           )}
         </div>
       </Group>
 
       <AnimatePresence>
-        {editing && (
-          <AddPanel title={`${editing.label} — ${editing.id}`} onCancel={() => setEditing(null)}>
-            <div className="flex gap-1.5">
-              <Input
-                autoFocus
-                type="password"
-                value={secret}
-                onChange={(event) => setSecret(event.target.value)}
-                placeholder={editing.oauth ? "Paste the token" : "sk-…"}
-                className="font-mono text-[0.76rem]"
-              />
-              <Button size="sm" variant="primary" disabled={busy || !secret.trim()} onClick={() => void submit()}>
-                {busy ? <Loader2 size={12} className="animate-spin" /> : "Connect"}
-              </Button>
-            </div>
+        {target && (
+          <AddPanel
+            title={`Connect ${target.integration.name}`}
+            onCancel={() => {
+              setTarget(null);
+              setAttempt(null);
+            }}
+          >
+            {target.method.type === "oauth" ? (
+              attempt ? (
+                <div className="flex flex-col gap-2">
+                  <a
+                    href={attempt.attempt.url}
+                    target="_blank"
+                    rel="noreferrer"
+                    className="truncate text-[0.78rem] text-accent underline underline-offset-2"
+                  >
+                    {attempt.attempt.url}
+                  </a>
+                  {attempt.attempt.instructions && (
+                    <p className="text-[0.74rem] leading-relaxed text-ink-muted">
+                      {attempt.attempt.instructions}
+                    </p>
+                  )}
+                  {attempt.attempt.paste || attempt.attempt.mode === "code" ? (
+                    <div className="flex gap-1.5">
+                      <Input
+                        autoFocus
+                        value={code}
+                        onChange={(event) => setCode(event.target.value)}
+                        placeholder="Paste the code"
+                        className="font-mono text-[0.76rem]"
+                      />
+                      <Button size="sm" variant="primary" disabled={busy} onClick={() => void finishOauth()}>
+                        Submit
+                      </Button>
+                    </div>
+                  ) : (
+                    <Button size="sm" variant="ghost" disabled={busy} onClick={() => void finishOauth()}>
+                      I&apos;ve authorized
+                    </Button>
+                  )}
+                  <p className="text-[0.7rem] text-ink-ghost">Waiting for authorization…</p>
+                </div>
+              ) : (
+                <div className="flex flex-col gap-2">
+                  <p className="text-[0.76rem] leading-relaxed text-ink-muted">
+                    Open the provider&apos;s page to approve access. Halyard picks up the result
+                    automatically.
+                  </p>
+                  <Button size="sm" variant="primary" disabled={busy} onClick={() => void startOauth()}>
+                    {busy ? <Loader2 size={12} className="animate-spin" /> : "Start sign-in"}
+                  </Button>
+                </div>
+              )
+            ) : (
+              <div className="flex gap-1.5">
+                <Input
+                  autoFocus
+                  type="password"
+                  value={secret}
+                  onChange={(event) => setSecret(event.target.value)}
+                  placeholder="Paste the key"
+                  className="font-mono text-[0.76rem]"
+                />
+                <Button
+                  size="sm"
+                  variant="primary"
+                  disabled={busy || !secret.trim()}
+                  onClick={() => void connectKey()}
+                >
+                  {busy ? <Loader2 size={12} className="animate-spin" /> : "Connect"}
+                </Button>
+              </div>
+            )}
             <p className="mt-1.5 text-[0.7rem] text-ink-ghost">
-              Written to opencode's own auth store. Never to Halyard's settings.
+              Stored by opencode. Never in Halyard&apos;s settings.
             </p>
           </AddPanel>
         )}
@@ -1425,69 +1646,6 @@ function SaveBar({
           Save &amp; restart
         </Button>
       </div>
-    </div>
-  );
-}
-
-// ---------------------------------------------------------------------------
-// Diagnostics
-// ---------------------------------------------------------------------------
-
-export function DiagnosticsTab() {
-  const lsp = useSystem((s) => s.lsp);
-  const formatters = useSystem((s) => s.formatters);
-  const loading = useSystem((s) => s.loading);
-
-  const noneLoaded = !loading && lsp.length === 0 && formatters.length === 0;
-
-  return (
-    <div>
-      <Group label="Language servers" hint={loading ? "loading…" : `${lsp.length} detected`}>
-        {loading ? (
-          <SkeletonList count={2} />
-        ) : lsp.length === 0 ? (
-          <Empty>No language servers detected for this project.</Empty>
-        ) : (
-          <div className="flex flex-col gap-1">
-            {lsp.map((server) => (
-              <div key={server.id ?? server.name} className="flex items-center gap-2 rounded-[var(--radius-card)] border border-line bg-raised/40 px-2.5 py-1.5">
-                <span className="min-w-0 flex-1 truncate text-[0.8rem] text-ink">{server.name}</span>
-                <Badge tone={server.status === "connected" || server.status === "ready" ? "good" : "neutral"}>
-                  {server.status}
-                </Badge>
-              </div>
-            ))}
-          </div>
-        )}
-      </Group>
-
-      <Group label="Formatters" hint={loading ? "loading…" : `${formatters.length} configured`}>
-        {loading ? (
-          <SkeletonList count={2} />
-        ) : formatters.length === 0 ? (
-          <Empty>No formatters configured.</Empty>
-        ) : (
-          <div className="flex flex-col gap-1">
-            {formatters.map((formatter) => (
-              <div key={formatter.name} className="flex items-center gap-2 rounded-[var(--radius-card)] border border-line bg-raised/40 px-2.5 py-1.5">
-                <span className="min-w-0 flex-1 truncate text-[0.8rem] text-ink">{formatter.name}</span>
-                <span className="truncate font-mono text-[0.68rem] text-ink-ghost">
-                  {formatter.extensions?.join(" ") ?? ""}
-                </span>
-                <Badge tone={formatter.enabled ? "good" : "neutral"}>
-                  {formatter.enabled ? "on" : "off"}
-                </Badge>
-              </div>
-            ))}
-          </div>
-        )}
-      </Group>
-
-      {!loading && noneLoaded && (
-        <p className="text-[0.72rem] text-ink-ghost">
-          Add servers under &quot;lsp&quot; and &quot;formatter&quot; in the Config tab.
-        </p>
-      )}
     </div>
   );
 }

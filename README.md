@@ -27,13 +27,13 @@ started, watched and stopped for you.
 
 ## What it does
 
-- **Sessions** — tabs, branching, forking, sharing, export and import through
+- **Sessions** — tabs, branching, forking, export and import through
   opencode's own CLI, scoped to the project you have open
 - **Subagents** — delegated runs appear as nested sessions under their parent
 - **Diffs** — per-file review, inline with the tool that made the change
 - **Plan** — the agent's todo list, live above the composer
 - **Skills** — search and attach several at once, then send them as commands
-- **Permissions and questions** — answered inline, without leaving the thread
+- **Permissions and prompts** — answered inline, without leaving the thread
 - **Context meter** — the live prompt window, not a lifetime token tally
 - **Tray** — close to tray, notifications when a turn finishes, taskbar badge
 - **Settings** — providers, models, agents, MCP servers, skills and opencode's
@@ -43,6 +43,8 @@ started, watched and stopped for you.
 
 You need [Node](https://nodejs.org), [pnpm](https://pnpm.io), a Rust
 toolchain, and `opencode` on your `PATH` — or a path to it in Settings.
+Halyard requires opencode v2 (2.4 or newer); v1 servers are not supported — v2
+enforces Basic auth and serves a different API.
 
 ```bash
 git clone https://github.com/12errh/halyard.git

@@ -9,7 +9,7 @@
  */
 
 import { create } from "zustand";
-import type { ServerEvent } from "@/lib/opencode/types";
+import type { V2Event } from "@/lib/opencode/types";
 
 export interface VcsState {
   branch: string | null;
@@ -21,13 +21,13 @@ export interface VcsState {
 
 interface ProjectStore extends VcsState {
   load(client: VcsClient): Promise<void>;
-  ingest(event: ServerEvent): void;
+  ingest(event: V2Event): void;
   reset(): void;
 }
 
 /** The slice of the opencode client this store needs. */
 export interface VcsClient {
-  vcs(): Promise<{ branch?: string; default_branch?: string }>;
+  vcs(): Promise<{ branch: string | null; defaultBranch: string | null }>;
   fileStatus(): Promise<Array<Record<string, unknown>>>;
 }
 
@@ -44,7 +44,7 @@ export const useProjectInfo = create<ProjectStore>((set) => ({
       ]);
       set({
         branch: vcs?.branch ?? null,
-        defaultBranch: vcs?.default_branch ?? null,
+        defaultBranch: vcs?.defaultBranch ?? null,
         fileStatus: indexFiles(files),
         loaded: true,
       });
@@ -56,23 +56,25 @@ export const useProjectInfo = create<ProjectStore>((set) => ({
   },
 
   ingest: (event) => {
+    const data = (event.data ?? {}) as { branch?: unknown; file?: unknown; event?: unknown };
     switch (event.type) {
       case "vcs.branch.updated": {
-        const branch = (event.properties as { branch?: string }).branch;
-        if (typeof branch === "string") set({ branch });
+        if (typeof data.branch === "string") set({ branch: data.branch });
         break;
       }
-      case "file.watcher.updated":
-      case "file.status": {
-        const raw = (event.properties as { files?: unknown }).files;
-        if (Array.isArray(raw)) set({ fileStatus: indexFiles(raw as Array<Record<string, unknown>>) });
-        break;
-      }
-      case "file.edited": {
-        // An edit the agent made outside the diff feed — a file saved in the
-        // editor, say. Mark it rather than dropping the signal.
-        const file = (event.properties as { file?: string }).file;
-        if (typeof file === "string") {
+      case "filesystem.changed": {
+        // v2 reports one file at a time and says whether it appeared,
+        // changed, or disappeared. There is no status payload to index.
+        const file = data.file;
+        if (typeof file !== "string" || !file) break;
+        if (data.event === "unlink") {
+          set((s) => {
+            if (!(file in s.fileStatus)) return s;
+            const fileStatus = { ...s.fileStatus };
+            delete fileStatus[file];
+            return { fileStatus };
+          });
+        } else {
           set((s) => ({ fileStatus: { ...s.fileStatus, [file]: "modified" } }));
         }
         break;

@@ -12,8 +12,8 @@ import { useServer } from "@/state/server";
  */
 export function useOpencodeClient(): OpencodeClient | null {
   const phase = useServer((s) => s.phase);
-  return useMemo(
-    () => (phase.kind === "ready" ? new OpencodeClient(phase.info.url) : null),
-    [phase],
-  );
+  return useMemo(() => {
+    if (phase.kind !== "ready") return null;
+    return new OpencodeClient(phase.info.url, phase.info.password);
+  }, [phase]);
 }

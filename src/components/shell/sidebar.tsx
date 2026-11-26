@@ -21,7 +21,7 @@ import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Kbd } from "@/components/ui/primitives";
 import { projectName, shortenPath, cn } from "@/lib/utils";
-import type { Session } from "@/lib/opencode/types";
+import { toSessionView, type Session } from "@/lib/opencode/types";
 import {
   childLabel,
   filterSessions,
@@ -41,7 +41,7 @@ import {
 import { useServer } from "@/state/server";
 import { useSessionOrg } from "@/state/session-org";
 import { OpencodeClient } from "@/lib/opencode/client";
-import { Archive, MoreHorizontal, Pin, Share2 } from "lucide-react";
+import { Archive, MoreHorizontal, Pin } from "lucide-react";
 import { useThreads } from "@/state/threads";
 
 /** A stable identity for "nothing pinned here", so selectors stay referentially equal. */
@@ -89,11 +89,12 @@ export function Sidebar({ onOpenSettings }: { onOpenSettings(): void }) {
     const result = await importSessionFile();
     if (result.ok) {
       // The importer writes into opencode's store; re-read the list.
-      const client = useServer.getState().phase;
-      if (client.kind === "ready") {
-        const { OpencodeClient } = await import("@/lib/opencode/client");
-        const fresh = await new OpencodeClient(client.info.url).listSessions().catch(() => []);
-        useSessions.getState().setSessions(fresh);
+      const phase = useServer.getState().phase;
+      if (phase.kind === "ready") {
+        const fresh = await new OpencodeClient(phase.info.url, phase.info.password)
+          .listSessions()
+          .catch(() => null);
+        if (fresh) useSessions.getState().setSessions(fresh.data.map(toSessionView));
       }
     }
     setNotice(result.ok ? result.message : null);
@@ -124,24 +125,6 @@ export function Sidebar({ onOpenSettings }: { onOpenSettings(): void }) {
     ? searched
     : [...arranged.pinned, ...arranged.recent, ...arranged.archived];
   const nextRecent = arranged.recent[0]?.id ?? arranged.pinned[0]?.id ?? null;
-  const upsertSession = useSessions((s) => s.upsert);
-
-
-  const handleShare = async (session: Session) => {
-    const phase = useServer.getState().phase;
-    if (phase.kind !== "ready") return;
-    try {
-      const next = session.slug
-        ? session
-        : await new OpencodeClient(phase.info.url).share(session.id);
-      upsertSession(next);
-      const url = `${window.location.origin}/s/${next.slug}`;
-      await navigator.clipboard.writeText(url);
-      setNotice(`Share link copied for "${next.title}"`);
-    } catch {
-      setNotice("Could not share that session");
-    }
-  };
 
   return (
     <aside className="flex h-full min-h-0 w-[280px] shrink-0 flex-col bg-surface">
@@ -484,12 +467,6 @@ export function Sidebar({ onOpenSettings }: { onOpenSettings(): void }) {
                             label: "Fork",
                             icon: <GitBranch size={11} />,
                             run: () => void forkSession(session.id),
-                          },
-                          {
-                            id: "share",
-                            label: session.slug ? "Copy share link" : "Share",
-                            icon: <Share2 size={11} />,
-                            run: () => void handleShare(session),
                           },
                           {
                             id: "export",

@@ -11,30 +11,30 @@ import {
   type PendingQuestion,
 } from "@/state/questions";
 import { QuestionCard } from "@/components/chat/question-card";
-import type { ServerEvent } from "@/lib/opencode/types";
+import type { Form, V2Event } from "@/lib/opencode/types";
 
 const SESSION = "ses_1";
 
-function askedEvent(overrides: Record<string, unknown> = {}): ServerEvent {
-  return {
-    id: "evt_1",
-    type: "question.v2.asked",
-    properties: {
-      id: "que_1",
-      sessionID: SESSION,
-      questions: [
-        {
-          header: "Database",
-          question: "Which database should I use?",
-          options: [
-            { label: "Postgres", description: "Relational" },
-            { label: "SQLite", description: "Embedded" },
-          ],
-        },
-      ],
-      ...overrides,
-    },
-  } as ServerEvent;
+const DATABASE_FIELD: Form.Field = {
+  key: "database",
+  title: "Database",
+  description: "Which database should I use?",
+  type: "enum",
+  options: [
+    { value: "postgres", label: "Postgres", description: "Relational" },
+    { value: "sqlite", label: "SQLite", description: "Embedded" },
+  ],
+};
+
+const DATABASE_FORM: Form.Info = {
+  id: "form_1",
+  sessionID: SESSION,
+  title: "Database",
+  fields: [DATABASE_FIELD],
+};
+
+function formEvent(type: string, form: Form.Info = DATABASE_FORM): V2Event {
+  return { id: "evt_1", type, data: { form } };
 }
 
 describe("normaliseQuestion", () => {
@@ -85,64 +85,59 @@ describe("normaliseQuestion", () => {
 });
 
 describe("applyQuestionEvent", () => {
-  it("adds a v2 question", () => {
-    const next = applyQuestionEvent(emptyQuestions(), askedEvent(), 100);
+  it("adds a form", () => {
+    const next = applyQuestionEvent(emptyQuestions(), formEvent("form.created"), 100);
     expect(pendingFor(next, SESSION)).toHaveLength(1);
-  });
-
-  it("adds a v1 question", () => {
-    const next = applyQuestionEvent(
-      emptyQuestions(),
-      { id: "e", type: "question.asked", properties: askedEvent().properties } as ServerEvent,
-      100,
-    );
-    expect(pendingFor(next, SESSION)[0]!.version).toBe(1);
+    expect(pendingFor(next, SESSION)[0]!.id).toBe("form_1");
   });
 
   it("is idempotent for a re-broadcast", () => {
-    let state = applyQuestionEvent(emptyQuestions(), askedEvent(), 100);
-    state = applyQuestionEvent(state, askedEvent(), 9999);
+    let state = applyQuestionEvent(emptyQuestions(), formEvent("form.created"), 100);
+    state = applyQuestionEvent(state, formEvent("form.created"), 9999);
     expect(pendingFor(state, SESSION)).toHaveLength(1);
     expect(pendingFor(state, SESSION)[0]!.askedAt).toBe(100);
   });
 
   it("removes on replied", () => {
-    let state = applyQuestionEvent(emptyQuestions(), askedEvent(), 100);
-    state = applyQuestionEvent(state, {
-      id: "e",
-      type: "question.v2.replied",
-      properties: { sessionID: SESSION, requestID: "que_1" },
-    } as ServerEvent, 200);
+    let state = applyQuestionEvent(emptyQuestions(), formEvent("form.created"), 100);
+    state = applyQuestionEvent(
+      state,
+      { id: "e", type: "form.replied", data: { form: DATABASE_FORM, answer: { database: "postgres" } } },
+      200,
+    );
     expect(pendingFor(state, SESSION)).toHaveLength(0);
   });
 
-  it("removes on rejected", () => {
-    let state = applyQuestionEvent(emptyQuestions(), askedEvent(), 100);
-    state = applyQuestionEvent(state, {
-      id: "e",
-      type: "question.v2.rejected",
-      properties: { sessionID: SESSION, requestID: "que_1" },
-    } as ServerEvent, 200);
+  it("removes on cancelled", () => {
+    let state = applyQuestionEvent(emptyQuestions(), formEvent("form.created"), 100);
+    state = applyQuestionEvent(state, formEvent("form.cancelled"), 200);
     expect(pendingFor(state, SESSION)).toHaveLength(0);
   });
 
-  it("ignores an event with no usable questions", () => {
+  it("ignores a form with no answerable fields", () => {
     const state = emptyQuestions();
-    const next = applyQuestionEvent(state, askedEvent({ questions: [] }), 100);
-    expect(next).toBe(state);
+    const booleanForm: Form.Info = {
+      ...DATABASE_FORM,
+      fields: [{ key: "force", title: "Force?", type: "boolean" }],
+    };
+    expect(applyQuestionEvent(state, formEvent("form.created", booleanForm), 100)).toBe(state);
   });
 
   it("keeps sessions isolated", () => {
-    let state = applyQuestionEvent(emptyQuestions(), askedEvent(), 100);
-    state = applyQuestionEvent(state, askedEvent({ id: "que_2", sessionID: "ses_2" }), 200);
+    let state = applyQuestionEvent(emptyQuestions(), formEvent("form.created"), 100);
+    state = applyQuestionEvent(
+      state,
+      formEvent("form.created", { ...DATABASE_FORM, id: "form_2", sessionID: "ses_2" }),
+      200,
+    );
     expect(pendingFor(state, "ses_2")).toHaveLength(1);
     expect(pendingFor(state, SESSION)).toHaveLength(1);
   });
 
   it("merges a fetch without resetting a card on screen", () => {
-    const existing = applyQuestionEvent(emptyQuestions(), askedEvent(), 100);
+    const existing = applyQuestionEvent(emptyQuestions(), formEvent("form.created"), 100);
     const next = mergeFetch(existing, [
-      { id: "que_1", sessionID: SESSION, questions: [], version: 2, askedAt: 9999 },
+      { id: "form_1", sessionID: SESSION, questions: [], version: 2, askedAt: 9999 },
     ]);
     expect(pendingFor(next, SESSION)[0]!.askedAt).toBe(100);
   });
@@ -152,16 +147,16 @@ describe("question store", () => {
   beforeEach(() => useQuestions.getState().reset());
 
   it("ingests and resolves", () => {
-    useQuestions.getState().ingest(askedEvent());
+    useQuestions.getState().ingest(formEvent("form.created"));
     expect(pendingFor({ bySession: useQuestions.getState().bySession }, SESSION)).toHaveLength(1);
-    useQuestions.getState().resolve(SESSION, "que_1");
+    useQuestions.getState().resolve(SESSION, "form_1");
     expect(pendingFor({ bySession: useQuestions.getState().bySession }, SESSION)).toHaveLength(0);
   });
 });
 
 function pending(overrides: Partial<PendingQuestion> = {}): PendingQuestion {
   return {
-    id: "que_1",
+    id: "form_1",
     sessionID: SESSION,
     version: 2,
     askedAt: 0,
@@ -181,33 +176,56 @@ function pending(overrides: Partial<PendingQuestion> = {}): PendingQuestion {
 
 describe("QuestionCard", () => {
   it("renders the question and its options with descriptions", () => {
-    render(<QuestionCard pending={pending()} onSubmit={vi.fn()} onReject={vi.fn()} />);
+    render(
+      <QuestionCard
+        pending={pending()}
+        fields={[DATABASE_FIELD]}
+        onSubmit={vi.fn()}
+        onReject={vi.fn()}
+      />,
+    );
     expect(screen.getByText("Which database should I use?")).toBeInTheDocument();
     expect(screen.getByText("Postgres")).toBeInTheDocument();
     expect(screen.getByText("Relational")).toBeInTheDocument();
   });
 
   it("cannot be answered until something is chosen", () => {
-    render(<QuestionCard pending={pending()} onSubmit={vi.fn()} onReject={vi.fn()} />);
+    render(
+      <QuestionCard
+        pending={pending()}
+        fields={[DATABASE_FIELD]}
+        onSubmit={vi.fn()}
+        onReject={vi.fn()}
+      />,
+    );
     expect(screen.getByRole("button", { name: "Answer" })).toBeDisabled();
   });
 
-  it("sends one answer per question, in order", async () => {
+  it("replies with the field key and option value", async () => {
     const user = userEvent.setup();
     const onSubmit = vi.fn().mockResolvedValue(undefined);
-    render(<QuestionCard pending={pending()} onSubmit={onSubmit} onReject={vi.fn()} />);
+    render(
+      <QuestionCard
+        pending={pending()}
+        fields={[DATABASE_FIELD]}
+        onSubmit={onSubmit}
+        onReject={vi.fn()}
+      />,
+    );
 
     await user.click(screen.getByText("Postgres"));
     await user.click(screen.getByRole("button", { name: "Answer" }));
 
-    expect(onSubmit).toHaveBeenCalledWith([["Postgres"]]);
+    expect(onSubmit).toHaveBeenCalledWith({ database: "postgres" });
   });
 
-  it("sends an empty slot for a skipped question", async () => {
-    // The server matches answers to questions positionally, so a two-question
-    // card must always send two entries even when only one is answered.
+  it("omits a question that was left unanswered", async () => {
     const user = userEvent.setup();
     const onSubmit = vi.fn().mockResolvedValue(undefined);
+    const fields: Form.Field[] = [
+      { key: "one", title: "One", type: "enum", options: [{ value: "a", label: "A" }] },
+      { key: "two", title: "Two", type: "enum", options: [{ value: "b", label: "B" }] },
+    ];
     render(
       <QuestionCard
         pending={pending({
@@ -216,6 +234,7 @@ describe("QuestionCard", () => {
             { header: "Two", question: "Second?", options: [{ label: "B" }] },
           ],
         })}
+        fields={fields}
         onSubmit={onSubmit}
         onReject={vi.fn()}
       />,
@@ -224,19 +243,26 @@ describe("QuestionCard", () => {
     await user.click(screen.getByText("B"));
     await user.click(screen.getByRole("button", { name: "Answer" }));
 
-    expect(onSubmit).toHaveBeenCalledWith([[], ["B"]]);
+    expect(onSubmit).toHaveBeenCalledWith({ two: "b" });
   });
 
   it("replaces the single choice when another is picked", async () => {
     const user = userEvent.setup();
     const onSubmit = vi.fn().mockResolvedValue(undefined);
-    render(<QuestionCard pending={pending()} onSubmit={onSubmit} onReject={vi.fn()} />);
+    render(
+      <QuestionCard
+        pending={pending()}
+        fields={[DATABASE_FIELD]}
+        onSubmit={onSubmit}
+        onReject={vi.fn()}
+      />,
+    );
 
     await user.click(screen.getByText("Postgres"));
     await user.click(screen.getByText("SQLite"));
     await user.click(screen.getByRole("button", { name: "Answer" }));
 
-    expect(onSubmit).toHaveBeenCalledWith([["SQLite"]]);
+    expect(onSubmit).toHaveBeenCalledWith({ database: "sqlite" });
   });
 
   it("accumulates choices when multiple is allowed", async () => {
@@ -254,6 +280,17 @@ describe("QuestionCard", () => {
             },
           ],
         })}
+        fields={[
+          {
+            key: "targets",
+            title: "Targets",
+            type: "multiselect",
+            options: [
+              { value: "web", label: "web" },
+              { value: "api", label: "api" },
+            ],
+          },
+        ]}
         onSubmit={onSubmit}
         onReject={vi.fn()}
       />,
@@ -263,7 +300,7 @@ describe("QuestionCard", () => {
     await user.click(screen.getByText("api"));
     await user.click(screen.getByRole("button", { name: "Answer" }));
 
-    expect(onSubmit).toHaveBeenCalledWith([["web", "api"]]);
+    expect(onSubmit).toHaveBeenCalledWith({ targets: ["web", "api"] });
   });
 
   it("accepts a typed answer when custom is allowed", async () => {
@@ -276,6 +313,15 @@ describe("QuestionCard", () => {
             { header: "Name", question: "What should it be called?", options: [], custom: true },
           ],
         })}
+        fields={[
+          {
+            key: "name",
+            title: "Name",
+            description: "What should it be called?",
+            type: "string",
+            custom: true,
+          },
+        ]}
         onSubmit={onSubmit}
         onReject={vi.fn()}
       />,
@@ -285,13 +331,20 @@ describe("QuestionCard", () => {
     await user.type(box, "my-service");
     await user.click(screen.getByRole("button", { name: "Answer" }));
 
-    expect(onSubmit).toHaveBeenCalledWith([["my-service"]]);
+    expect(onSubmit).toHaveBeenCalledWith({ name: "my-service" });
   });
 
   it("surfaces a failure instead of silently closing", async () => {
     const user = userEvent.setup();
     const onSubmit = vi.fn().mockRejectedValue(new Error("agent went away"));
-    render(<QuestionCard pending={pending()} onSubmit={onSubmit} onReject={vi.fn()} />);
+    render(
+      <QuestionCard
+        pending={pending()}
+        fields={[DATABASE_FIELD]}
+        onSubmit={onSubmit}
+        onReject={vi.fn()}
+      />,
+    );
 
     await user.click(screen.getByText("Postgres"));
     await user.click(screen.getByRole("button", { name: "Answer" }));
@@ -302,7 +355,14 @@ describe("QuestionCard", () => {
   it("can be skipped", async () => {
     const user = userEvent.setup();
     const onReject = vi.fn().mockResolvedValue(undefined);
-    render(<QuestionCard pending={pending()} onSubmit={vi.fn()} onReject={onReject} />);
+    render(
+      <QuestionCard
+        pending={pending()}
+        fields={[DATABASE_FIELD]}
+        onSubmit={vi.fn()}
+        onReject={onReject}
+      />,
+    );
 
     await user.click(screen.getByRole("button", { name: "Skip" }));
     expect(onReject).toHaveBeenCalledOnce();
@@ -317,6 +377,10 @@ describe("QuestionCard", () => {
             { header: "B", question: "Two?", options: [{ label: "y" }] },
           ],
         })}
+        fields={[
+          { key: "a", title: "A", type: "enum", options: [{ value: "x", label: "x" }] },
+          { key: "b", title: "B", type: "enum", options: [{ value: "y", label: "y" }] },
+        ]}
         onSubmit={vi.fn()}
         onReject={vi.fn()}
       />,

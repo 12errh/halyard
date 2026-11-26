@@ -7,8 +7,6 @@
  * its supporting files underneath, rather than 158 unrelated rows.
  */
 
-import type { ClientResources } from "@/lib/opencode/types";
-
 export interface SkillFile {
   /** Path within the skill, e.g. `scripts/setup_env.py`. */
   path: string;
@@ -121,5 +119,3 @@ export function searchSkills(skills: Skill[], query: string): Skill[] {
       (skill.description ?? "").toLowerCase().includes(needle),
   );
 }
-
-export type { ClientResources };

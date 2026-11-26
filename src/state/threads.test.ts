@@ -1,7 +1,7 @@
 import { beforeEach, describe, expect, it } from "vitest";
 import { useThreads } from "@/state/threads";
 import { orderedParts } from "@/lib/opencode/thread";
-import type { MessageInfo, ServerEvent, TextPart } from "@/lib/opencode/types";
+import type { MessageInfo, TextPart, V2Event } from "@/lib/opencode/types";
 
 /**
  * Streaming cadence.
@@ -27,17 +27,17 @@ const assistant: MessageInfo = {
   time: { created: 1, updated: 1 },
 } as MessageInfo;
 
-function delta(text: string): ServerEvent {
+function delta(text: string): V2Event {
   return {
-    type: "message.part.delta",
-    properties: {
+    id: `evt_${Math.random().toString(36).slice(2)}`,
+    type: "session.text.delta",
+    data: {
       sessionID: SESSION,
-      messageID: "msg_1",
-      partID: "prt_1",
-      field: "text",
+      assistantMessageID: "msg_1",
+      ordinal: 0,
       delta: text,
     },
-  } as unknown as ServerEvent;
+  } as unknown as V2Event;
 }
 
 /**
@@ -121,16 +121,18 @@ describe("thread store: streaming cadence", () => {
 
     // A tool call that ran after the paragraph must not render above it.
     useThreads.getState().ingest({
-      type: "message.part.updated",
-      properties: {
+      id: "evt_tool",
+      type: "session.tool.input.started",
+      data: {
         sessionID: SESSION,
-        messageID: "msg_1",
-        part: { id: "prt_2", sessionID: SESSION, messageID: "msg_1", type: "tool", state: {} },
+        assistantMessageID: "msg_1",
+        id: "prt_2",
+        name: "bash",
       },
-    } as unknown as ServerEvent);
+    } as unknown as V2Event);
 
     const entry = useThreads.getState().threads[SESSION];
-    expect(entry?.messages["msg_1"]?.partOrder).toEqual(["prt_1", "prt_2"]);
+    expect(entry?.messages["msg_1"]?.partOrder).toEqual(["msg_1:0", "prt_2"]);
     expect(streamedText()).toBe("streamed ");
   });
 
@@ -148,7 +150,7 @@ describe("thread store: streaming cadence", () => {
     useThreads.getState().ingest(delta("quick "));
 
     const serverPart: TextPart = {
-      id: "prt_1",
+      id: "msg_1:0",
       sessionID: SESSION,
       messageID: "msg_1",
       type: "text",
@@ -162,22 +164,25 @@ describe("thread store: streaming cadence", () => {
   it("applies ordinary events immediately, with no frame in between", () => {
     // Busy state drives the spinner; a frame of lag would be visible.
     useThreads.getState().ingest({
-      type: "session.status",
-      properties: { sessionID: SESSION, status: { type: "busy" } },
-    } as unknown as ServerEvent);
+      id: "evt_start",
+      type: "session.execution.started",
+      data: { sessionID: SESSION },
+    } as unknown as V2Event);
 
     expect(useThreads.getState().busySessionId).toBe(SESSION);
   });
 
   it("resolves the busy state when the session goes idle", () => {
     useThreads.getState().ingest({
-      type: "session.status",
-      properties: { sessionID: SESSION, status: { type: "busy" } },
-    } as unknown as ServerEvent);
+      id: "evt_start",
+      type: "session.execution.started",
+      data: { sessionID: SESSION },
+    } as unknown as V2Event);
     useThreads.getState().ingest({
-      type: "session.idle",
-      properties: { sessionID: SESSION },
-    } as unknown as ServerEvent);
+      id: "evt_done",
+      type: "session.execution.succeeded",
+      data: { sessionID: SESSION },
+    } as unknown as V2Event);
 
     expect(useThreads.getState().busySessionId).toBeNull();
   });

@@ -13,7 +13,6 @@ import {
   AgentsTab,
   AppearanceTab,
   ConfigTab,
-  DiagnosticsTab,
   McpTab,
   ModelsTab,
   PermissionsTab,
@@ -29,8 +28,7 @@ export type TabId =
   | "mcp"
   | "resources"
   | "permissions"
-  | "config"
-  | "lsp";
+  | "config";
 
 const TABS: Array<{ id: TabId; label: string }> = [
   { id: "appearance", label: "General" },
@@ -41,7 +39,6 @@ const TABS: Array<{ id: TabId; label: string }> = [
   { id: "resources", label: "Skills" },
   { id: "permissions", label: "Permissions" },
   { id: "config", label: "Config" },
-  { id: "lsp", label: "LSP" },
 ];
 
 export function SettingsDialog({
@@ -67,7 +64,7 @@ export function SettingsDialog({
       setSystemClient(null);
       return;
     }
-    setSystemClient(new OpencodeClient(phase.info.url));
+    setSystemClient(new OpencodeClient(phase.info.url, phase.info.password));
     void loadSystem();
   }, [phase, setSystemClient, loadSystem]);
 
@@ -195,7 +192,5 @@ function TabBody({ tab }: { tab: TabId }) {
       return <PermissionsTab />;
     case "config":
       return <ConfigTab />;
-    case "lsp":
-      return <DiagnosticsTab />;
   }
 }

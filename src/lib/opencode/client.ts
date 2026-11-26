@@ -1,21 +1,46 @@
 /**
- * Thin REST client for the opencode server.
+ * Thin REST client for the opencode v2 server.
  *
  * Deliberately hand-rolled over `fetch` rather than pulling in the generated
- * SDK: Halyard needs a dozen endpoints, and this keeps the transport (and its
- * failure modes) visible in one file.
+ * SDK: Halyard needs a few dozen endpoints, and this keeps the transport (and
+ * its failure modes) visible in one file.
+ *
+ * v2.4.x requires HTTP Basic auth on every route — user `opencode`, password
+ * generated per server boot and handed to us by the Rust side. The credential
+ * never appears in logs or error messages; it is only ever put on the wire.
  */
 
 import { httpFetch } from "@/lib/http";
+import {
+  subscribe,
+  type SseHandle,
+  type SseOptions,
+} from "./sse";
 import type {
-  AssistantMessage,
-  MessageInfo,
-  Part,
+  AgentInfoV2,
+  ConfigEntry,
+  CredentialEntry,
+  CursorV2,
+  FileDiff,
+  FileStatus,
+  Form,
+  FormValue,
+  InboxCompaction,
+  InboxUser,
+  IntegrationAttemptEncoded,
+  IntegrationAttemptStatus,
+  IntegrationInfo,
+  McpServer,
+  MessageV2,
+  ModelInfo,
+  Permission,
   PermissionReply,
-  PendingPermission,
-  ServerEvent,
-  Session,
-  SessionStatus,
+  ProviderInfo,
+  ServerInfoV2,
+  SessionInfoV2,
+  SessionRevert,
+  SkillInfo,
+  V2Event,
 } from "./types";
 
 export interface FileNode {
@@ -36,473 +61,510 @@ export class OpencodeError extends Error {
   }
 }
 
-export interface LspStatus {
-  id?: string;
-  name: string;
-  root?: string;
-  status: string;
+/** One page of a cursor-paginated v2 list. */
+export interface Page<T> {
+  data: T[];
+  cursor: CursorV2;
 }
 
-export interface FormatterStatus {
-  name: string;
-  extensions?: string[];
-  enabled?: boolean;
+/** A cursor that says "no more pages", for responses that omit one. */
+const NO_CURSOR: CursorV2 = { previous: null, next: null };
+
+type QueryValue = string | number | boolean | undefined;
+
+function queryString(params: Record<string, QueryValue>): string {
+  const search = new URLSearchParams();
+  for (const [key, value] of Object.entries(params)) {
+    if (value === undefined) continue;
+    search.set(key, String(value));
+  }
+  const encoded = search.toString();
+  return encoded ? `?${encoded}` : "";
 }
 
-export interface StatusEntry {
-  name?: string;
-  status?: string;
+interface RequestOptions {
+  method?: string;
+  body?: unknown;
+  query?: Record<string, QueryValue>;
+}
+
+interface RawEntry {
+  path?: string;
+  type?: string;
   [key: string]: unknown;
 }
 
-export interface MessageEntry {
-  info: MessageInfo;
-  parts: Part[];
-}
-
-export interface PromptOptions {
-  model?: { providerID: string; modelID: string };
-  agent?: string;
-  parts: Array<{ type: "text"; text: string } | { type: "file"; url: string; mime: string; filename?: string }>;
-}
-
 export class OpencodeClient {
-  constructor(
-    readonly baseUrl: string,
-    private readonly fetchImpl: typeof fetch = httpFetch,
-  ) {}
+  readonly baseUrl: string;
+  private readonly authorization: string;
+  private readonly fetchImpl: typeof fetch;
 
-  private async request<T>(path: string, init?: RequestInit): Promise<T> {
-    let response: Response;
+  constructor(baseUrl: string, password: string, fetchImpl: typeof fetch = httpFetch) {
+    this.baseUrl = baseUrl.replace(/\/+$/, "");
+    // btoa needs latin-1; opencode passwords are hex, so this is safe.
+    this.authorization = `Basic ${btoa(`opencode:${password}`)}`;
+    this.fetchImpl = fetchImpl;
+  }
+
+  // --- Transport ----------------------------------------------------------
+
+  private url(path: string): string {
+    return `${this.baseUrl}${path}`;
+  }
+
+  /**
+   * Run a request and return the response for the caller to decode.
+   *
+   * Content-type is only set when a body is going out: sending it on a GET
+   * makes some proxies treat the request as preflighted and mutating.
+   */
+  private async request(path: string, options: RequestOptions = {}): Promise<Response> {
+    const headers = new Headers();
+    headers.set("Authorization", this.authorization);
+    if (options.body !== undefined) headers.set("Content-Type", "application/json");
+
+    const response = await this.fetchImpl(
+      this.url(path) + queryString(options.query ?? {}),
+      {
+        method: options.method ?? "GET",
+        headers,
+        body: options.body === undefined ? undefined : JSON.stringify(options.body),
+      },
+    );
+
+    if (!response.ok) throw await this.failure(response);
+    return response;
+  }
+
+  /** Decode a JSON body, treating 204 and empty bodies as `undefined`. */
+  private async body<T>(response: Response): Promise<T | undefined> {
+    if (response.status === 204) return undefined;
+    const text = await response.text();
+    if (!text.trim()) return undefined;
+    return JSON.parse(text) as T;
+  }
+
+  /** Unwrap the v2 `{data: T}` envelope. */
+  private async requestData<T>(path: string, options: RequestOptions = {}): Promise<T> {
+    const parsed = await this.body<{ data?: T }>(await this.request(path, options));
+    return parsed?.data as T;
+  }
+
+  /** Unwrap a cursor-paginated list, defaulting a missing cursor to empty. */
+  private async requestList<T>(
+    path: string,
+    options: RequestOptions = {},
+  ): Promise<Page<T>> {
+    const parsed = await this.body<{ data?: T[]; cursor?: CursorV2 }>(
+      await this.request(path, options),
+    );
+    return {
+      data: Array.isArray(parsed?.data) ? parsed.data : [],
+      cursor: parsed?.cursor ?? NO_CURSOR,
+    };
+  }
+
+  private async failure(response: Response): Promise<OpencodeError> {
+    let message = response.statusText || `HTTP ${response.status}`;
+
     try {
-      response = await this.fetchImpl(`${this.baseUrl}${path}`, {
-        ...init,
-        headers: {
-          "content-type": "application/json",
-          ...(init?.headers ?? {}),
-        },
-      });
-    } catch (cause) {
-      throw new OpencodeError(`cannot reach opencode at ${this.baseUrl}: ${(cause as Error).message}`);
+      const text = await response.text();
+      if (text.trim()) {
+        const parsed = JSON.parse(text) as { _tag?: string; message?: unknown; kind?: string };
+        if (typeof parsed.message === "string") message = parsed.message;
+        else if (parsed._tag) message = parsed._tag;
+      }
+    } catch {
+      // Not a JSON error envelope; the status text stands in.
     }
 
-    if (!response.ok) {
-      throw new OpencodeError(
-        `${init?.method ?? "GET"} ${path} failed with ${response.status}`,
-        response.status,
-      );
-    }
-
-    if (response.status === 204) return undefined as T;
-    return (await response.json()) as T;
+    return new OpencodeError(message, response.status);
   }
 
-  health() {
-    return this.request<{ healthy: boolean; version: string }>("/global/health");
+  // --- Server -------------------------------------------------------------
+
+  info(): Promise<ServerInfoV2> {
+    return this.request("/api/info").then((response) => response.json() as Promise<ServerInfoV2>);
   }
 
-  listSessions() {
-    return this.request<Session[]>("/session");
+  // --- Sessions -----------------------------------------------------------
+
+  listSessions(opts: {
+    limit?: number;
+    cursor?: string;
+    search?: string;
+    parentID?: string;
+    archived?: boolean;
+  } = {}): Promise<Page<SessionInfoV2>> {
+    return this.requestList<SessionInfoV2>("/api/session", { query: { ...opts } });
   }
 
-  createSession(title?: string) {
-    return this.request<Session>("/session", {
-      method: "POST",
-      body: JSON.stringify(title ? { title } : {}),
-    });
+  getSession(id: string): Promise<SessionInfoV2> {
+    return this.requestData<SessionInfoV2>(`/api/session/${encodeURIComponent(id)}`);
   }
 
-  deleteSession(id: string) {
-    return this.request<boolean>(`/session/${id}`, { method: "DELETE" });
+  createSession(body: { title?: string } = {}): Promise<SessionInfoV2> {
+    return this.requestData<SessionInfoV2>("/api/session", { method: "POST", body });
   }
 
-  renameSession(id: string, title: string) {
-    return this.request<Session>(`/session/${id}`, {
+  async updateSession(
+    id: string,
+    patch: { title?: string; archived?: boolean; metadata?: Record<string, unknown> },
+  ): Promise<void> {
+    await this.request(`/api/session/${encodeURIComponent(id)}`, {
       method: "PATCH",
-      body: JSON.stringify({ title }),
+      body: patch,
     });
   }
 
-  children(id: string) {
-    return this.request<Session[]>(`/session/${id}/children`);
+  async deleteSession(id: string): Promise<void> {
+    await this.request(`/api/session/${encodeURIComponent(id)}`, { method: "DELETE" });
   }
 
-  forkSession(id: string, messageID?: string) {
-    return this.request<Session>(`/session/${id}/fork`, {
+  forkSession(id: string, before?: string): Promise<SessionInfoV2> {
+    return this.requestData<SessionInfoV2>(`/api/session/${encodeURIComponent(id)}/fork`, {
       method: "POST",
-      body: JSON.stringify(messageID ? { messageID } : {}),
+      body: { before },
     });
   }
 
-  messages(id: string) {
-    return this.request<MessageEntry[]>(`/session/${id}/message`);
+  messages(id: string, opts: { cursor?: string; limit?: number } = {}): Promise<Page<MessageV2>> {
+    return this.requestList<MessageV2>(`/api/session/${encodeURIComponent(id)}/message`, {
+      query: { ...opts },
+    });
   }
 
-  /**
-   * Send a prompt *asynchronously*.
-   *
-   * The synchronous `/message` endpoint blocks until the whole turn completes
-   * and returns nothing incremental — verified against opencode 1.18.35. All
-   * output arrives over the event stream instead, which is what makes token
-   * streaming possible.
-   */
-  sendPrompt(id: string, options: PromptOptions) {
-    return this.request<void>(`/session/${id}/prompt_async`, {
+  sendPrompt(
+    id: string,
+    body: {
+      text: string;
+      files?: { url: string; mime?: string; filename?: string }[];
+      agents?: { name: string }[];
+      skills?: { name: string }[];
+      resume?: boolean;
+      delivery?: string;
+    },
+  ): Promise<InboxUser> {
+    return this.requestData<InboxUser>(`/api/session/${encodeURIComponent(id)}/prompt`, {
       method: "POST",
-      body: JSON.stringify(options),
+      body,
     });
   }
 
-  abort(id: string) {
-    return this.request<boolean>(`/session/${id}/abort`, { method: "POST" });
+  async interrupt(id: string): Promise<{ interrupted: boolean }> {
+    const parsed = await this.body<{ interrupted?: boolean; data?: { interrupted?: boolean } }>(
+      await this.request(`/api/session/${encodeURIComponent(id)}/interrupt`, { method: "POST" }),
+    );
+    return { interrupted: parsed?.data?.interrupted ?? parsed?.interrupted ?? false };
   }
 
-  status() {
-    return this.request<Record<string, SessionStatus>>("/session/status");
+  async active(): Promise<Record<string, { type: "running" }>> {
+    const parsed = await this.body<{ data?: Record<string, { type: "running" }> }>(
+      await this.request("/api/session/active"),
+    );
+    return parsed?.data ?? {};
   }
 
-  /**
-   * The agent's current plan for a session.
-   *
-   * Served separately from the messages: the transcript only contains a
-   * `todowrite` tool call at the moment the list last changed, whereas this
-   * always reflects the live state, so it is what the panel should read on
-   * open rather than trying to replay the history.
-   */
-  /** Which branch the project is on, and what its default is. */
-  vcs() {
-    return this.request<{ branch?: string; default_branch?: string }>("/vcs");
+  async setSessionModel(
+    id: string,
+    model: { id: string; providerID: string; variant?: string },
+  ): Promise<void> {
+    await this.request(`/api/session/${encodeURIComponent(id)}/model`, {
+      method: "POST",
+      body: { model },
+    });
   }
 
-  /** Files the agent has modified, with their status. */
-  fileStatus() {
-    return this.request<Array<Record<string, unknown>>>("/file/status");
+  async setSessionAgent(id: string, agent: string): Promise<void> {
+    await this.request(`/api/session/${encodeURIComponent(id)}/agent`, {
+      method: "POST",
+      body: { agent },
+    });
   }
 
-  /** Skill and MCP resources opencode can offer the agent. */
-  resources() {
-    return this.request<Record<string, Record<string, unknown>>>("/experimental/resource");
+  // --- Workspace ----------------------------------------------------------
+
+  async vcs(): Promise<{ branch: string | null; defaultBranch: string | null }> {
+    const parsed = await this.body<{
+      data?: { branch?: { current?: string | null; default?: string | null } };
+    }>(await this.request("/api/vcs"));
+    const branch = parsed?.data?.branch;
+    return {
+      branch: branch?.current ?? null,
+      defaultBranch: branch?.default ?? null,
+    };
   }
 
-  todos(sessionID: string) {
-    return this.request<unknown[]>(`/session/${sessionID}/todo`);
+  async fileStatus(): Promise<FileStatus[]> {
+    const parsed = await this.body<{ data?: FileStatus[] }>(
+      await this.request("/api/vcs/status"),
+    );
+    return Array.isArray(parsed?.data) ? parsed.data : [];
   }
 
-  agents() {
-    return this.request<Array<{ name: string; description?: string; mode?: string }>>("/agent");
+  async diff(id: string): Promise<FileDiff[]> {
+    const parsed = await this.body<{ data?: FileDiff[] }>(
+      await this.request(`/api/session/${encodeURIComponent(id)}/diff`),
+    );
+    return Array.isArray(parsed?.data) ? parsed.data : [];
   }
 
-  commands() {
-    // `source` distinguishes built-in commands from user skills, so the
-    // palette can group them under their own headings.
-    return this.request<Array<{ name: string; description?: string; source?: string }>>(
-      "/command",
+  // --- Catalogue ----------------------------------------------------------
+
+  agents(): Promise<AgentInfoV2[]> {
+    return this.requestData<AgentInfoV2[]>("/api/agent").then((data) =>
+      Array.isArray(data) ? data : [],
     );
   }
 
-  /**
-   * Provider and model catalogue.
-   *
-   * Deliberately `GET /provider`, not `/config/providers`: the latter returns
-   * every provider's API key in plaintext and a model picker has no business
-   * seeing one.
-   */
-  providerCatalogue() {
-    return this.request<unknown>("/provider");
+  async commands(): Promise<{ name: string; description?: string; source?: string }[]> {
+    const parsed = await this.body<{
+      data?: { name: string; description?: string; source?: string }[];
+    }>(await this.request("/api/command"));
+    return Array.isArray(parsed?.data) ? parsed.data : [];
   }
 
-  models() {
-    return this.request<{
-      providers: Array<{
-        id: string;
-        name: string;
-        models: Record<string, { id: string; name?: string }>;
-      }>;
-      default: Record<string, string>;
-    }>("/config/providers");
+  providers(): Promise<ProviderInfo[]> {
+    return this.requestData<ProviderInfo[]>("/api/provider").then((data) =>
+      Array.isArray(data) ? data : [],
+    );
   }
 
-  /** Credential entry points a provider offers (api key, oauth, ...). */
-  authMethods() {
-    return this.request<Record<string, Array<{ type: string; label: string }>>>("/provider/auth");
+  models(): Promise<ModelInfo[]> {
+    return this.requestData<ModelInfo[]>("/api/model").then((data) =>
+      Array.isArray(data) ? data : [],
+    );
   }
 
-  setAuth(providerID: string, type: "api" | "oauth", secret: string) {
-    return this.request<boolean>(`/auth/${providerID}`, {
-      method: "PUT",
-      body: JSON.stringify(type === "api" ? { type: "api", key: secret } : { type: "oauth" }),
-    });
+  skills(): Promise<SkillInfo[]> {
+    return this.requestData<SkillInfo[]>("/api/skill").then((data) =>
+      Array.isArray(data) ? data : [],
+    );
   }
 
-  removeAuth(providerID: string) {
-    return this.request<boolean>(`/auth/${providerID}`, { method: "DELETE" });
+  async config(): Promise<ConfigEntry[]> {
+    // Unlike every other catalogue route, /api/config returns a bare array of
+    // source entries rather than a `{data:[...]}` envelope.
+    const parsed = await this.body<ConfigEntry[] | { data?: ConfigEntry[] }>(
+      await this.request("/api/config"),
+    );
+    if (Array.isArray(parsed)) return parsed;
+    return Array.isArray(parsed?.data) ? parsed.data : [];
   }
 
-  mcpStatus() {
-    return this.request<Record<string, StatusEntry>>("/mcp");
+  mcpStatus(): Promise<McpServer[]> {
+    return this.requestData<McpServer[]>("/api/mcp").then((data) =>
+      Array.isArray(data) ? data : [],
+    );
   }
 
-  addMcp(name: string, config: Record<string, unknown>) {
-    return this.request<Record<string, StatusEntry>>("/mcp", {
+  integrations(): Promise<IntegrationInfo[]> {
+    return this.requestData<IntegrationInfo[]>("/api/integration").then((data) =>
+      Array.isArray(data) ? data : [],
+    );
+  }
+
+  credentials(): Promise<CredentialEntry[]> {
+    return this.requestData<CredentialEntry[]>("/api/credential").then((data) =>
+      Array.isArray(data) ? data : [],
+    );
+  }
+
+  // --- Integrations and credentials ---------------------------------------
+
+  async connectIntegrationKey(
+    id: string,
+    body: { key: string; label?: string; answer?: Record<string, string> },
+  ): Promise<void> {
+    await this.request(`/api/integration/${encodeURIComponent(id)}/connect/key`, {
       method: "POST",
-      body: JSON.stringify({ name, config }),
+      body,
     });
   }
 
-  /** Begin an MCP server's OAuth flow; open the returned URL. */
-  startMcpAuth(name: string) {
-    return this.request<{ authorizationUrl: string; oauthState: string }>(`/mcp/${name}/auth`, {
-      method: "POST",
-      body: JSON.stringify({}),
-    });
+  connectIntegrationOauth(
+    id: string,
+    body: { methodID: string; answer?: Record<string, string>; label?: string },
+  ): Promise<IntegrationAttemptEncoded> {
+    return this.requestData<IntegrationAttemptEncoded>(
+      `/api/integration/${encodeURIComponent(id)}/connect/oauth`,
+      { method: "POST", body },
+    );
   }
 
-  clearMcpAuth(name: string) {
-    return this.request<{ success: boolean }>(`/mcp/${name}/auth`, { method: "DELETE" });
+  oauthStatus(id: string, attemptID: string): Promise<IntegrationAttemptStatus> {
+    return this.requestData<IntegrationAttemptStatus>(
+      `/api/integration/${encodeURIComponent(id)}/connect/oauth/${encodeURIComponent(attemptID)}`,
+    );
   }
 
-  connectMcp(name: string) {
-    return this.request<boolean>(`/mcp/${name}/connect`, {
-      method: "POST",
-      body: JSON.stringify({}),
-    });
+  async completeOauth(id: string, attemptID: string, code?: string): Promise<void> {
+    await this.request(
+      `/api/integration/${encodeURIComponent(id)}/connect/oauth/${encodeURIComponent(attemptID)}/complete`,
+      { method: "POST", body: { code } },
+    );
   }
 
-  disconnectMcp(name: string) {
-    return this.request<boolean>(`/mcp/${name}/disconnect`, {
-      method: "POST",
-      body: JSON.stringify({}),
-    });
+  createCredential(body: {
+    integrationID: string;
+    value: CredentialEntry["value"];
+    label?: string;
+    activate?: boolean;
+  }): Promise<CredentialEntry> {
+    return this.requestData<CredentialEntry>("/api/credential", { method: "POST", body });
   }
 
-  lspStatus() {
-    return this.request<LspStatus[]>("/lsp");
+  async activateCredential(id: string): Promise<void> {
+    await this.request(`/api/credential/${encodeURIComponent(id)}/activate`, { method: "POST" });
   }
 
-  formatterStatus() {
-    return this.request<FormatterStatus[]>("/formatter");
+  async deleteCredential(id: string): Promise<void> {
+    await this.request(`/api/credential/${encodeURIComponent(id)}`, { method: "DELETE" });
   }
 
-  config() {
-    return this.request<Record<string, unknown>>("/config");
+  // --- Forms and permissions ---------------------------------------------
+
+  forms(sessionID: string): Promise<Form.Info[]> {
+    return this.requestData<Form.Info[]>(
+      `/api/session/${encodeURIComponent(sessionID)}/form`,
+    ).then((data) => (Array.isArray(data) ? data : []));
   }
 
-  updateConfig(patch: Record<string, unknown>) {
-    return this.request<Record<string, unknown>>("/config", {
-      method: "PATCH",
-      body: JSON.stringify(patch),
-    });
+  async replyForm(
+    sessionID: string,
+    formID: string,
+    answer: Record<string, FormValue>,
+  ): Promise<void> {
+    await this.request(
+      `/api/session/${encodeURIComponent(sessionID)}/form/${encodeURIComponent(formID)}/reply`,
+      { method: "POST", body: { answer } },
+    );
   }
 
-  diff(sessionID: string, messageID?: string) {
-    const query = messageID ? `?messageID=${encodeURIComponent(messageID)}` : "";
-    // Shape is SnapshotFileDiff[]: keyed by `file`, not `path`.
-    return this.request<unknown[]>(`/session/${sessionID}/diff${query}`);
+  permissions(sessionID: string): Promise<Permission.Request[]> {
+    return this.requestData<Permission.Request[]>(
+      `/api/session/${encodeURIComponent(sessionID)}/permission`,
+    ).then((data) => (Array.isArray(data) ? data : []));
   }
 
-  // --- Permissions (v2 is current; v1 kept as a fallback) ------------------
-
-  // --- Questions (the agent asking the user back) -------------------------
-
-  /** Pending v2 questions, wrapped in `{ data }`. */
-  async listQuestions(sessionID: string): Promise<unknown[]> {
-    const raw = await this.request<{ data?: unknown[] }>(`/api/session/${sessionID}/question`);
-    return raw?.data ?? [];
-  }
-
-  /**
-   * Answer a question.
-   *
-   * v2 is preferred; a v1-only server answers 404 here, so fall back rather
-   * than leave the agent waiting on an answer that will never arrive.
-   */
-  async replyQuestion(
+  async replyPermission(
     sessionID: string,
     requestID: string,
-    answers: string[][],
-    version: 1 | 2 = 2,
-  ) {
-    if (version === 1) {
-      return this.request<boolean>(`/question/${requestID}/reply`, {
-        method: "POST",
-        body: JSON.stringify({ answers }),
+    decision: PermissionReply,
+  ): Promise<void> {
+    await this.request(
+      `/api/session/${encodeURIComponent(sessionID)}/permission/${encodeURIComponent(requestID)}/reply`,
+      { method: "POST", body: { decision } },
+    );
+  }
+
+  // --- Filesystem ---------------------------------------------------------
+
+  async files(query: string, limit = 20): Promise<string[]> {
+    const parsed = await this.body<{ data?: RawEntry[] }>(
+      await this.request("/api/fs/find", {
+        query: { query, type: "file", limit },
+      }),
+    );
+    if (!Array.isArray(parsed?.data)) return [];
+    return parsed.data
+      .map((entry) => entry.path)
+      .filter((path): path is string => typeof path === "string");
+  }
+
+  async listFiles(path = ""): Promise<FileNode[]> {
+    const parsed = await this.body<{ data?: RawEntry[] }>(
+      await this.request("/api/fs/list", { query: { path } }),
+    );
+    if (!Array.isArray(parsed?.data)) return [];
+
+    return parsed.data
+      .filter((entry): entry is RawEntry & { path: string } => typeof entry.path === "string")
+      .map((entry) => {
+        // Directory entries arrive with a trailing slash ("home/"), which
+        // would otherwise make the derived name an empty string.
+        const trimmed = entry.path.replace(/\/+$/, "");
+        return {
+          name: trimmed.split("/").pop() ?? trimmed,
+          path: entry.path,
+          absolute: `${this.baseUrl}/api/fs/read/${encodePath(entry.path)}`,
+          type: entry.type ?? "file",
+          ignored: typeof entry.ignored === "boolean" ? entry.ignored : undefined,
+        };
       });
-    }
-    try {
-      return await this.request<unknown>(
-        `/api/session/${sessionID}/question/${requestID}/reply`,
-        { method: "POST", body: JSON.stringify({ answers }) },
-      );
-    } catch (error) {
-      if (error instanceof OpencodeError && error.status === 404) {
-        return this.request<boolean>(`/question/${requestID}/reply`, {
-          method: "POST",
-          body: JSON.stringify({ answers }),
-        });
-      }
-      throw error;
-    }
   }
 
-  async rejectQuestion(sessionID: string, requestID: string, version: 1 | 2 = 2) {
-    if (version === 1) {
-      return this.request<boolean>(`/question/${requestID}/reject`, { method: "POST" });
-    }
-    try {
-      return await this.request<unknown>(
-        `/api/session/${sessionID}/question/${requestID}/reject`,
-        { method: "POST" },
-      );
-    } catch (error) {
-      if (error instanceof OpencodeError && error.status === 404) {
-        return this.request<boolean>(`/question/${requestID}/reject`, { method: "POST" });
-      }
-      throw error;
-    }
-  }
-
-  /** Pending v2 permission requests, wrapped in `{ data }`. */
-  async listPermissions(sessionID: string): Promise<PendingPermission[]> {
-    const raw = await this.request<{ data?: unknown[] }>(
-      `/api/session/${sessionID}/permission`,
-    );
-    const rows = raw?.data ?? [];
-    return rows
-      .map((row) => toPending(row, 2))
-      .filter((row): row is PendingPermission => row !== null);
-  }
-
-  async replyPermissionV2(sessionID: string, requestID: string, reply: PermissionReply) {
-    return this.request<unknown>(
-      `/api/session/${sessionID}/permission/${requestID}/reply`,
-      { method: "POST", body: JSON.stringify({ reply }) },
+  readFile(path: string): Promise<string> {
+    return this.request(`/api/fs/read/${encodePath(path)}`).then((response) =>
+      response.text(),
     );
   }
 
-  async replyPermissionV1(sessionID: string, requestID: string, reply: PermissionReply) {
-    return this.request<boolean>(`/session/${sessionID}/permissions/${requestID}`, {
-      method: "POST",
-      body: JSON.stringify({ response: reply }),
+  // --- Revert and compaction ---------------------------------------------
+
+  revertStage(
+    id: string,
+    messageID: string,
+    files?: string[],
+  ): Promise<SessionRevert> {
+    return this.requestData<SessionRevert>(
+      `/api/session/${encodeURIComponent(id)}/revert/stage`,
+      { method: "POST", body: { messageID, files } },
+    );
+  }
+
+  async revertClear(id: string): Promise<void> {
+    await this.request(`/api/session/${encodeURIComponent(id)}/revert`, {
+      method: "DELETE",
     });
   }
 
+  async revertCommit(id: string): Promise<void> {
+    await this.request(`/api/session/${encodeURIComponent(id)}/revert/commit`, {
+      method: "POST",
+    });
+  }
+
+  compact(id: string): Promise<InboxCompaction> {
+    return this.requestData<InboxCompaction>(
+      `/api/session/${encodeURIComponent(id)}/compact`,
+      { method: "POST", body: {} },
+    );
+  }
+
+  // --- Events -------------------------------------------------------------
+
   /**
-   * Reply using v2, falling back to v1.
+   * Identity of the server this client talks to, credential included.
    *
-   * A server that only speaks v1 answers 404 here. Falling back keeps the
-   * approve button working rather than leaving the agent blocked forever.
+   * Stores use it to decide whether a client is genuinely a different server.
+   * Comparing the URL alone missed a restart that reused the port with a new
+   * password, so every caller kept the stale credential and got a 401.
    */
-  async replyPermission(sessionID: string, permission: PendingPermission, reply: PermissionReply) {
-    if (permission.version === 1) {
-      return this.replyPermissionV1(sessionID, permission.id, reply);
-    }
-    try {
-      return await this.replyPermissionV2(sessionID, permission.id, reply);
-    } catch (error) {
-      if (error instanceof OpencodeError && error.status === 404) {
-        return this.replyPermissionV1(sessionID, permission.id, reply);
-      }
-      throw error;
-    }
-  }
-
-  // --- Files ---------------------------------------------------------------
-
-  /**
-   * List a directory. `path` must always be present — the server rejects the
-   * request outright when the key is missing, so an empty string is how you ask
-   * for the project root.
-   */
-  listFiles(path = "") {
-    return this.request<FileNode[]>(`/file?path=${encodeURIComponent(path)}`);
-  }
-
-  readFile(path: string) {
-    return this.request<{ type: string; content: string }>(
-      `/file/content?path=${encodeURIComponent(path)}`,
-    );
-  }
-
-  // --- Editing a prior turn ------------------------------------------------
-
-  /** Rewind the conversation to just before `messageID`. */
-  revert(sessionID: string, messageID: string, partID?: string) {
-    return this.request<Session>(`/session/${sessionID}/revert`, {
-      method: "POST",
-      body: JSON.stringify(partID ? { messageID, partID } : { messageID }),
-    });
-  }
-
-  unrevert(sessionID: string) {
-    return this.request<Session>(`/session/${sessionID}/unrevert`, { method: "POST" });
-  }
-
-  /**
-   * Summarise the conversation so far into a single turn.
-   *
-   * This is what the compact command is. A model is required because the
-   * summary is generated rather than extracted, and it is the only request on
-   * this client that fails with a bare "Missing key providerID" — worth
-   * saying out loud in the error rather than letting it surface raw.
-   */
-  summarize(sessionID: string, model: { providerID: string; modelID: string }) {
-    return this.request<Session>(`/session/${sessionID}/summarize`, {
-      method: "POST",
-      body: JSON.stringify(model),
-    });
-  }
-
-  /** Publish the session and return it carrying the share slug. */
-  share(sessionID: string) {
-    return this.request<Session>(`/session/${sessionID}/share`, { method: "POST" });
-  }
-
-  unshare(sessionID: string) {
-    return this.request<Session>(`/session/${sessionID}/share`, { method: "DELETE" });
-  }
-
-  rename(sessionID: string, title: string) {
-    return this.request<Session>(`/session/${sessionID}`, {
-      method: "PATCH",
-      body: JSON.stringify({ title }),
-    });
-  }
-
-  files(query: string, limit = 20) {
-    return this.request<string[]>(
-      `/find/file?query=${encodeURIComponent(query)}&limit=${limit}&type=file`,
-    );
+  get serverKey(): string {
+    return `${this.baseUrl}\n${this.authorization}`;
   }
 
   eventsUrl(): string {
-    return `${this.baseUrl}/event`;
+    return `${this.baseUrl}/api/event`;
+  }
+
+  /** Subscribe to the event bus with credentials already attached. */
+  subscribeEvents(options: Omit<SseOptions, "headers">): SseHandle {
+    return subscribe(this.eventsUrl(), {
+      ...options,
+      headers: { Authorization: this.authorization },
+    });
   }
 }
 
-/** Adapt a raw permission row into the UI's single shape, or reject it. */
-function toPending(raw: unknown, version: 1 | 2): PendingPermission | null {
-  if (!raw || typeof raw !== "object") return null;
-  const record = raw as Record<string, unknown>;
-  const id = typeof record.id === "string" ? record.id : null;
-  const sessionID = typeof record.sessionID === "string" ? record.sessionID : null;
-  if (!id || !sessionID) return null;
-
-  const source = record.source as { messageID?: string; callID?: string } | undefined;
-  const tool =
-    source && typeof source.messageID === "string" && typeof source.callID === "string"
-      ? { messageID: source.messageID, callID: source.callID }
-      : undefined;
-
-  return {
-    id,
-    sessionID,
-    action: typeof record.action === "string" ? record.action : "unknown",
-    resources: Array.isArray(record.resources) ? (record.resources as string[]) : [],
-    save: Array.isArray(record.save) ? (record.save as string[]) : undefined,
-    tool,
-    version,
-    askedAt: Date.now(),
-  };
+function encodePath(path: string): string {
+  return path
+    .split("/")
+    .filter((segment) => segment.length > 0)
+    .map((segment) => encodeURIComponent(segment))
+    .join("/");
 }
 
-export type { ServerEvent, AssistantMessage };
+/** Re-exported so callers can name the event type without reaching past this module. */
+export type { V2Event };

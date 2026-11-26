@@ -1,16 +1,15 @@
 /**
  * Questions the agent asks back.
  *
- * opencode can pause a turn and ask the user something (`question.asked` /
- * `question.v2.asked`). Nothing in the UI used to render those, so the agent
- * would wait forever with no visible cause — the same failure mode permissions
- * had before they were surfaced.
- *
- * Two generations exist; both are normalised into one shape.
+ * v2 replaces the old `question.*` events with generic forms
+ * (`form.created` / `form.replied` / `form.cancelled`). A form is a titled set
+ * of fields; this store normalises the answerable fields into the single
+ * question shape the card already renders, so the agent waiting on an answer
+ * is still visible instead of hanging with no cause on screen.
  */
 
 import { create } from "zustand";
-import type { ServerEvent } from "@/lib/opencode/types";
+import type { Form, V2Event } from "@/lib/opencode/types";
 
 export interface QuestionOption {
   label: string;
@@ -98,41 +97,61 @@ function drop(state: QuestionsState, sessionID: string, id: string): QuestionsSt
   return { bySession: { ...state.bySession, [sessionID]: next } };
 }
 
+/** Turn a form into the shape the question card renders. */
+export function toPendingQuestion(form: Form.Info, askedAt: number): PendingQuestion | null {
+  if (!form?.id || !form.sessionID) return null;
+  const questions: Question[] = [];
+  for (const field of form.fields ?? []) {
+    if (field.hidden) continue;
+    if (
+      field.type !== "string" &&
+      field.type !== "enum" &&
+      field.type !== "multiselect"
+    ) {
+      continue;
+    }
+    const options = field.options ?? [];
+    if (options.length === 0 && field.type !== "string") continue;
+    questions.push({
+      header: field.title ?? field.key,
+      question: field.description ?? field.title ?? field.key,
+      options: options.map((option) => ({
+        label: option.label,
+        description: option.description,
+      })),
+      multiple: field.type === "multiselect",
+      custom: field.custom === true || field.type === "string",
+    });
+  }
+  if (questions.length === 0) return null;
+  return {
+    id: form.id,
+    sessionID: form.sessionID,
+    questions,
+    version: 2,
+    askedAt,
+  };
+}
+
 export function applyQuestionEvent(
   state: QuestionsState,
-  event: ServerEvent,
+  event: V2Event,
   now: number,
 ): QuestionsState {
-  const props = event.properties as Record<string, unknown>;
+  const data = (event.data ?? {}) as Record<string, unknown>;
 
   switch (event.type) {
-    case "question.v2.asked":
-    case "question.asked": {
-      const id = typeof props.id === "string" ? props.id : null;
-      const sessionID = typeof props.sessionID === "string" ? props.sessionID : null;
-      if (!id || !sessionID) return state;
-      const raw = Array.isArray(props.questions) ? props.questions : [];
-      const questions = raw
-        .map(normaliseQuestion)
-        .filter((question): question is Question => question !== null);
-      if (questions.length === 0) return state;
-      return put(state, {
-        id,
-        sessionID,
-        questions,
-        version: event.type === "question.asked" ? 1 : 2,
-        askedAt: now,
-      });
+    case "form.created": {
+      const form = data.form as Form.Info | undefined;
+      const pending = form ? toPendingQuestion(form, now) : null;
+      return pending ? put(state, pending) : state;
     }
 
-    case "question.replied":
-    case "question.v2.replied":
-    case "question.rejected":
-    case "question.v2.rejected": {
-      const sessionID = String(props.sessionID ?? "");
-      const requestID = String(props.requestID ?? props.id ?? "");
-      if (!sessionID || !requestID) return state;
-      return drop(state, sessionID, requestID);
+    case "form.replied":
+    case "form.cancelled": {
+      const form = data.form as Form.Info | undefined;
+      if (!form?.id || !form.sessionID) return state;
+      return drop(state, form.sessionID, form.id);
     }
 
     default:
@@ -163,7 +182,7 @@ export function pendingCount(state: QuestionsState): number {
 }
 
 interface QuestionStore extends QuestionsState {
-  ingest(event: ServerEvent): void;
+  ingest(event: V2Event): void;
   sync(incoming: PendingQuestion[]): void;
   resolve: (sessionID: string, id: string) => void;
   clearSession: (sessionID: string) => void;

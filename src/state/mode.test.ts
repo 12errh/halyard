@@ -1,7 +1,7 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { toModeOptions, useMode, DEFAULT_MODE } from "@/state/mode";
 import { sortSessions, useSessions, filterSessions } from "@/state/sessions";
-import type { ServerEvent, Session } from "@/lib/opencode/types";
+import type { Session, V2Event } from "@/lib/opencode/types";
 
 const SESSION = "ses_1";
 
@@ -12,7 +12,7 @@ function session(overrides: Partial<Session> = {}): Session {
     projectID: "p",
     directory: "/tmp",
     title: "New session - 2026-10-13T12:52:33.569Z",
-    version: "1.18.35",
+    version: "2.4.2",
     time: { created: 1 },
     ...overrides,
   };
@@ -104,15 +104,15 @@ describe("sessions store: server events", () => {
     useSessions.setState({ sessions: [], tabs: [], activeId: null, query: "" }),
   );
 
-  it("adopts a generated title from session.updated", () => {
+  it("adopts a generated title from session.renamed", () => {
     // opencode names a session after the first turn; without this the list stays
     // stuck on the seeded "New session - <timestamp>" forever.
     useSessions.setState({ sessions: [session()] });
     useSessions.getState().ingest({
       id: "evt_1",
-      type: "session.updated",
-      properties: { sessionID: SESSION, info: session({ title: "Refactor the parser" }) },
-    } as ServerEvent);
+      type: "session.renamed",
+      data: { sessionID: SESSION, title: "Refactor the parser" },
+    } as V2Event);
 
     expect(useSessions.getState().sessions[0]!.title).toBe("Refactor the parser");
   });
@@ -120,9 +120,17 @@ describe("sessions store: server events", () => {
   it("adds a session it has never seen", () => {
     useSessions.getState().ingest({
       id: "evt_1",
-      type: "session.updated",
-      properties: { sessionID: "ses_new", info: session({ id: "ses_new", title: "New one" }) },
-    } as ServerEvent);
+      type: "session.created",
+      created: 1,
+      data: {
+        sessionID: "ses_new",
+        projectID: "p",
+        location: { directory: "/tmp" },
+        slug: "ses_new",
+        version: "2.4.2",
+        title: "New one",
+      },
+    } as V2Event);
     expect(useSessions.getState().sessions).toHaveLength(1);
   });
 
@@ -131,8 +139,8 @@ describe("sessions store: server events", () => {
     useSessions.getState().ingest({
       id: "evt_1",
       type: "session.deleted",
-      properties: { sessionID: SESSION },
-    } as ServerEvent);
+      data: { sessionID: SESSION },
+    } as V2Event);
 
     expect(useSessions.getState().sessions).toEqual([]);
     expect(useSessions.getState().tabs).toEqual([]);
@@ -142,17 +150,17 @@ describe("sessions store: server events", () => {
   it("ignores unrelated events", () => {
     useSessions.setState({ sessions: [session()] });
     const before = useSessions.getState().sessions;
-    useSessions.getState().ingest({ id: "e", type: "server.heartbeat", properties: {} });
+    useSessions.getState().ingest({ id: "e", type: "server.connected", data: {} } as V2Event);
     expect(useSessions.getState().sessions).toBe(before);
   });
 
-  it("tolerates an update with no info payload", () => {
+  it("tolerates a rename with no title", () => {
     useSessions.setState({ sessions: [session()] });
     useSessions.getState().ingest({
       id: "evt_1",
-      type: "session.updated",
-      properties: { sessionID: SESSION },
-    } as ServerEvent);
+      type: "session.renamed",
+      data: { sessionID: SESSION },
+    } as V2Event);
     expect(useSessions.getState().sessions).toHaveLength(1);
   });
 });
@@ -175,24 +183,30 @@ describe("list presentation", () => {
 });
 
 describe("prompt payload", () => {
-  it("carries the chosen agent and model", async () => {
-    // Both ride along per prompt; omitting the agent silently keeps whatever
-    // the session was created with, which is why Plan had no visible effect.
+  it("sends text only, with model and agent set on the session", async () => {
+    // v2 has no `parts[]`, `model` or `agent` on the prompt body: the model and
+    // agent are session state, set by their own routes before the prompt.
     const { OpencodeClient } = await import("@/lib/opencode/client");
-    const fetchImpl = vi.fn().mockResolvedValue({ status: 204, ok: true, json: async () => ({}) });
-    const client = new OpencodeClient("http://x", fetchImpl as unknown as typeof fetch);
+    const fetchImpl = vi.fn().mockResolvedValue({
+      status: 204,
+      ok: true,
+      json: async () => ({}),
+      text: async () => "",
+    });
+    const client = new OpencodeClient("http://x", "pw", fetchImpl as unknown as typeof fetch);
 
-    await client.sendPrompt("ses_1", {
-      model: { providerID: "opencode", modelID: "exo-free" },
-      agent: "plan",
-      parts: [{ type: "text", text: "hi" }],
+    await client.sendPrompt("ses_1", { text: "hi" });
+    expect(fetchImpl.mock.calls[0]![0]).toBe("http://x/api/session/ses_1/prompt");
+    expect(JSON.parse(String(fetchImpl.mock.calls[0]![1]?.body))).toEqual({ text: "hi" });
+
+    await client.setSessionModel("ses_1", { id: "exo-free", providerID: "opencode" });
+    expect(fetchImpl.mock.calls[1]![0]).toBe("http://x/api/session/ses_1/model");
+    expect(JSON.parse(String(fetchImpl.mock.calls[1]![1]?.body))).toEqual({
+      model: { id: "exo-free", providerID: "opencode" },
     });
 
-    const body = JSON.parse(String(fetchImpl.mock.calls[0]![1]?.body));
-    expect(body).toEqual({
-      model: { providerID: "opencode", modelID: "exo-free" },
-      agent: "plan",
-      parts: [{ type: "text", text: "hi" }],
-    });
+    await client.setSessionAgent("ses_1", "plan");
+    expect(fetchImpl.mock.calls[2]![0]).toBe("http://x/api/session/ses_1/agent");
+    expect(JSON.parse(String(fetchImpl.mock.calls[2]![1]?.body))).toEqual({ agent: "plan" });
   });
 });

@@ -7,7 +7,13 @@
  */
 
 import { create } from "zustand";
-import type { ServerEvent, Session, SessionStatus } from "@/lib/opencode/types";
+import type {
+  ModelRefV2,
+  Session,
+  SessionStatus,
+  TokenUsage,
+  V2Event,
+} from "@/lib/opencode/types";
 import { truncate } from "@/lib/utils";
 
 interface SessionStore {
@@ -62,7 +68,7 @@ interface SessionStore {
    * first turn and announces it via `session.updated`, so a list that is only
    * loaded once stays stuck on the seeded "New session - <timestamp>".
    */
-  ingest(event: ServerEvent): void;
+  ingest(event: V2Event): void;
   /**
    * Busy state for every session, not just the open one.
    *
@@ -175,51 +181,152 @@ export const useSessions = create<SessionStore>((set) => ({
 
   ingest: (event) =>
     set((state) => {
-      if (event.type === "session.updated" || event.type === "session.created") {
-        const info = (event.properties as { info?: Session }).info;
-        if (!info?.id) return state;
-        // The event bus is server-wide, so another project's session arriving
-        // here is normal traffic, not something to surface.
-        if (!inDirectory(info, state.directory)) return state;
-        const index = state.sessions.findIndex((s) => s.id === info.id);
-        if (index === -1) return { ...state, sessions: [info, ...state.sessions] };
-        const sessions = [...state.sessions];
-        sessions[index] = info;
-        return { ...state, sessions };
+      const data = (event.data ?? {}) as Record<string, unknown>;
+      const id = typeof data.sessionID === "string" ? data.sessionID : "";
+
+      // v2 announcements are field patches, not whole sessions. `created`
+      // carries enough to make a row; everything else edits one that exists.
+      if (event.type === "session.created") {
+        const created = sessionFromCreated(event, data);
+        if (!created || !inDirectory(created, state.directory)) return state;
+        if (state.sessions.some((s) => s.id === created.id)) return patchSession(state, created.id, created);
+        return { ...state, sessions: [created, ...state.sessions] };
       }
 
-      if (event.type === "session.status") {
-        const props = event.properties as { sessionID?: string; status?: SessionStatus };
-        if (!props.sessionID || !props.status) return state;
-        return { ...state, status: { ...state.status, [props.sessionID]: props.status } };
-      }
-
-      if (event.type === "session.deleted") {
-        const id = (event.properties as { sessionID?: string }).sessionID;
+      if (event.type === "session.forked") {
         if (!id) return state;
-        const status = { ...state.status };
-        delete status[id];
-        const sessions = state.sessions.filter((s) => s.id !== id);
-        const tabs = state.tabs.filter((t) => t !== id);
-        const children = Object.fromEntries(
-          Object.entries(state.children)
-            .map(([parent, kids]) => [parent, kids.filter((k) => k.id !== id)] as const)
-            .filter(([, kids]) => kids.length > 0),
-        );
-        if (sessions.length === state.sessions.length) return state;
+        const existing = state.sessions.find((s) => s.id === id);
+        if (existing) return state;
+        const parentID = typeof data.parentID === "string" ? data.parentID : undefined;
         return {
           ...state,
-          sessions,
-          status,
-          tabs,
-          children,
-          activeId: state.activeId === id ? (tabs[tabs.length - 1] ?? null) : state.activeId,
+          sessions: [
+            {
+              id,
+              title: typeof data.title === "string" ? data.title : "Forked session",
+              directory: directoryOf(data) ?? state.directory ?? "",
+              parentID,
+              slug: typeof data.slug === "string" ? data.slug : undefined,
+              projectID: typeof data.projectID === "string" ? data.projectID : undefined,
+              time: { created: event.created ?? Date.now() },
+            },
+            ...state.sessions,
+          ],
         };
       }
 
-      return state;
+      if (!id) return state;
+
+      switch (event.type) {
+        case "session.renamed":
+          return typeof data.title === "string"
+            ? patchSession(state, id, { title: data.title })
+            : state;
+        case "session.archived":
+          return patchSession(state, id, { archived: true });
+        case "session.unarchived":
+          return patchSession(state, id, { archived: false });
+        case "session.moved": {
+          const directory = directoryOf(data);
+          return directory ? patchSession(state, id, { directory }) : state;
+        }
+        case "session.model.selected":
+          return isModelRef(data.model)
+            ? patchSession(state, id, { model: data.model })
+            : state;
+        case "session.agent.selected":
+          return typeof data.agent === "string" ? patchSession(state, id, { agent: data.agent }) : state;
+        case "session.usage.updated":
+          return patchSession(state, id, {
+            cost: typeof data.cost === "number" ? data.cost : undefined,
+            tokens: isTokenUsage(data.tokens) ? data.tokens : undefined,
+          });
+        case "session.status": {
+          const status = data.status as SessionStatus | undefined;
+          if (!status) return state;
+          return { ...state, status: { ...state.status, [id]: status } };
+        }
+        case "session.execution.started":
+          return { ...state, status: { ...state.status, [id]: { type: "busy" } } };
+        case "session.execution.succeeded":
+        case "session.execution.failed":
+        case "session.execution.interrupted":
+        case "session.idle":
+          return { ...state, status: { ...state.status, [id]: { type: "idle" } } };
+        case "session.deleted": {
+          const status = { ...state.status };
+          delete status[id];
+          const sessions = state.sessions.filter((s) => s.id !== id);
+          const tabs = state.tabs.filter((t) => t !== id);
+          const children = Object.fromEntries(
+            Object.entries(state.children)
+              .map(([parent, kids]) => [parent, kids.filter((k) => k.id !== id)] as const)
+              .filter(([, kids]) => kids.length > 0),
+          );
+          if (sessions.length === state.sessions.length) return state;
+          return {
+            ...state,
+            sessions,
+            status,
+            tabs,
+            children,
+            activeId: state.activeId === id ? (tabs[tabs.length - 1] ?? null) : state.activeId,
+          };
+        }
+        default:
+          return state;
+      }
     }),
 }));
+
+type SessionPatch = Partial<Pick<Session, "title" | "archived" | "directory" | "model" | "agent" | "cost" | "tokens">>;
+
+/** Apply a patch to one known session; unknown ids are ignored. */
+function patchSession(state: SessionStore, id: string, patch: SessionPatch): SessionStore {
+  const index = state.sessions.findIndex((s) => s.id === id);
+  if (index === -1) return state;
+  const sessions = [...state.sessions];
+  sessions[index] = { ...sessions[index]!, ...patch };
+  return { ...state, sessions };
+}
+
+/** A `session.created` payload is a partial session; fill the required fields. */
+function sessionFromCreated(event: V2Event, data: Record<string, unknown>): Session | null {
+  const id = typeof data.sessionID === "string" ? data.sessionID : "";
+  const directory = directoryOf(data);
+  if (!id || !directory) return null;
+  return {
+    id,
+    title: typeof data.title === "string" ? data.title : "",
+    directory,
+    parentID: typeof data.parentID === "string" ? data.parentID : undefined,
+    slug: typeof data.slug === "string" ? data.slug : undefined,
+    projectID: typeof data.projectID === "string" ? data.projectID : undefined,
+    version: typeof data.version === "string" ? data.version : undefined,
+    agent: typeof data.agent === "string" ? data.agent : undefined,
+    model: isModelRef(data.model) ? data.model : undefined,
+    time: { created: event.created ?? Date.now() },
+  };
+}
+
+function directoryOf(data: Record<string, unknown>): string | null {
+  const location = data.location;
+  if (!location || typeof location !== "object") return null;
+  const directory = (location as { directory?: unknown }).directory;
+  return typeof directory === "string" && directory ? directory : null;
+}
+
+function isModelRef(value: unknown): value is ModelRefV2 {
+  if (!value || typeof value !== "object") return false;
+  const ref = value as { id?: unknown; providerID?: unknown };
+  return typeof ref.id === "string" && typeof ref.providerID === "string";
+}
+
+function isTokenUsage(value: unknown): value is TokenUsage {
+  if (!value || typeof value !== "object") return false;
+  const usage = value as { input?: unknown; output?: unknown };
+  return typeof usage.input === "number" && typeof usage.output === "number";
+}
 
 // --- Selectors ------------------------------------------------------------
 

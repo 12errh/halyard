@@ -10,7 +10,7 @@
  * Kept free of React so the decisions can be tested directly.
  */
 
-import { normaliseTodos, type Todo, type ToolState } from "@/lib/opencode/types";
+import { normaliseTodos, type Todo, type ToolMetadata, type ToolState } from "@/lib/opencode/types";
 
 export interface ToolView {
   /** Icon key, resolved to a component by the caller. */
@@ -32,7 +32,13 @@ function str(input: Record<string, unknown> | undefined, key: string): string | 
 
 /** The server's title, but only when it actually said something. */
 function titleOf(state: ToolState): string | undefined {
-  return state.title?.trim() ? state.title.trim() : undefined;
+  const title = "title" in state ? state.title : undefined;
+  return typeof title === "string" && title.trim() ? title.trim() : undefined;
+}
+
+/** Metadata only exists once a call has started; pending and error calls have none. */
+function metaOf(state: ToolState): ToolMetadata {
+  return "metadata" in state && state.metadata ? state.metadata : {};
 }
 
 function count(value: unknown): number | undefined {
@@ -88,7 +94,7 @@ function languageFor(path: string | undefined): string | undefined {
  */
 export function describeTool(tool: string, state: ToolState): ToolView {
   const input = state.input;
-  const meta = state.metadata ?? {};
+  const meta = metaOf(state);
 
   switch (tool) {
     case "bash": {
@@ -122,7 +128,12 @@ export function describeTool(tool: string, state: ToolState): ToolView {
       const path = str(input, "filePath");
       // The diff arrives in metadata, not output, so without this an edit
       // renders as a bare line with nothing to show.
-      const diff = meta.diff ?? (state.status === "completed" ? state.output : undefined);
+      const diff =
+        typeof meta.diff === "string"
+          ? meta.diff
+          : state.status === "completed"
+            ? state.output
+            : undefined;
       return {
         icon: "edit",
         title: `Edited ${shortenPath(path) || "file"}`,
@@ -185,7 +196,9 @@ export function describeTool(tool: string, state: ToolState): ToolView {
     case "todowrite": {
       // Prefer the metadata mirror: it survives truncation of a long list, and
       // it is the same list the sidebar and /session/todo serve.
-      const todos = normaliseTodos(meta.todos ?? input?.todos);
+      const todos = normaliseTodos(meta.todos ?? input?.todos).filter(
+        (todo) => todo.content.trim().length > 0,
+      );
       return {
         icon: "todo",
         title: "Todos",
@@ -195,15 +208,15 @@ export function describeTool(tool: string, state: ToolState): ToolView {
     }
 
     case "todoread":
-      return { icon: "todo", title: "Read todos", description: state.status === "completed" ? undefined : undefined };
+      return { icon: "todo", title: "Read todos" };
 
     case "skill":
       return { icon: "skill", title: `Skill "${str(input, "name") ?? ""}"` };
 
     case "patch": {
-      const files = Array.isArray(meta.files) ? meta.files : [];
+      const files = Array.isArray(meta.files) ? (meta.files as Record<string, unknown>[]) : [];
       const combined = files
-        .map((f) => f.patch ?? "")
+        .map((f) => (typeof f.patch === "string" ? f.patch : ""))
         .filter(Boolean)
         .join("\n");
       return {

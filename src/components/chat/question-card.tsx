@@ -5,22 +5,26 @@ import { Button } from "@/components/ui/button";
 import { Textarea } from "@/components/ui/input";
 import { Badge } from "@/components/ui/primitives";
 import type { PendingQuestion, Question } from "@/state/questions";
+import type { Form } from "@/lib/opencode/types";
 import { cn } from "@/lib/utils";
 
 /**
  * A question the agent asked back.
  *
- * Answers go back as one array of selected labels per question, in order —
- * that ordering is the contract with the server, so a card with three
- * questions must always send three entries even if one is skipped.
+ * The store renders a form as a list of questions, but a reply has to be the
+ * original field values: the field key names each answer and enum options carry
+ * a value distinct from their label. `fields` is that form, positionally
+ * aligned with `pending.questions`.
  */
 export function QuestionCard({
   pending,
+  fields,
   onSubmit,
   onReject,
 }: {
   pending: PendingQuestion;
-  onSubmit(answers: string[][]): Promise<void>;
+  fields: Form.Field[];
+  onSubmit(answer: Form.Answer): Promise<void>;
   onReject(): Promise<void>;
 }) {
   const [selected, setSelected] = useState<string[][]>(() =>
@@ -55,11 +59,31 @@ export function QuestionCard({
     setSubmitting(true);
     setError(null);
     try {
-      await onSubmit(
-        pending.questions.map((_, index) =>
-          custom[index]!.trim() ? [custom[index]!.trim()] : selected[index]!,
-        ),
-      );
+      const answer: Form.Answer = {};
+      pending.questions.forEach((_question, index) => {
+        const field = fields[index];
+        if (!field) return;
+        const typed = custom[index]!.trim();
+        if (typed) {
+          answer[field.key] = typed;
+          return;
+        }
+        const picks = selected[index]!;
+        if (picks.length === 0) return;
+        if (field.type === "multiselect") {
+          answer[field.key] = picks.map(
+            (label) => field.options.find((option) => option.label === label)?.value ?? label,
+          );
+          return;
+        }
+        const label = picks[0]!;
+        const option =
+          "options" in field
+            ? field.options?.find((candidate) => candidate.label === label)
+            : undefined;
+        answer[field.key] = option?.value ?? label;
+      });
+      await onSubmit(answer);
     } catch (cause) {
       setSubmitting(false);
       setError((cause as Error).message || "could not send the answer");

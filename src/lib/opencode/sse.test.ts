@@ -1,162 +1,189 @@
 import { describe, expect, it, vi } from "vitest";
 import { SseParser, subscribe } from "@/lib/opencode/sse";
-import type { ServerEvent } from "@/lib/opencode/types";
+import type { V2Event } from "@/lib/opencode/types";
+
+function deferred() {
+  let resolve!: () => void;
+  const promise = new Promise<void>((settle) => {
+    resolve = settle;
+  });
+  return { promise, resolve };
+}
+
+function streamOf(chunks: string[]): ReadableStream<Uint8Array> {
+  const encoder = new TextEncoder();
+  return new ReadableStream({
+    start(controller) {
+      for (const chunk of chunks) controller.enqueue(encoder.encode(chunk));
+      controller.close();
+    },
+  });
+}
 
 function frame(payload: unknown): string {
   return `data: ${JSON.stringify(payload)}\n\n`;
 }
 
-/** Build a Response-like object that streams the given chunks. */
-function streamOf(chunks: string[], opts: { failAfter?: number } = {}) {
-  let index = 0;
-  return {
-    ok: true,
-    body: {
-      getReader() {
-        return {
-          read: async () => {
-            if (opts.failAfter !== undefined && index >= opts.failAfter) {
-              throw new Error("connection reset");
-            }
-            if (index >= chunks.length) return { done: true, value: undefined };
-            const value = new TextEncoder().encode(chunks[index]!);
-            index += 1;
-            return { done: false, value };
-          },
-        };
-      },
-    },
-  } as unknown as Response;
-}
+// ---------------------------------------------------------------------------
 
-describe("SseParser framing", () => {
-  it("emits nothing until the terminating blank line arrives", () => {
+describe("SseParser", () => {
+  it("decodes one frame", () => {
     const parser = new SseParser();
-    expect(parser.push('data: {"type":"a"}')).toEqual([]);
-    // A frame ends at a blank line, i.e. the second newline.
-    expect(parser.push("\n")).toEqual([]);
-    expect(parser.push("\n")).toEqual(['{"type":"a"}']);
+    expect(parser.push('data: {"type":"server.connected"}\n\n')).toEqual([
+      '{"type":"server.connected"}',
+    ]);
   });
 
-  it("joins a payload split across chunks", () => {
+  it("joins multiple data lines with a newline", () => {
     const parser = new SseParser();
-    expect(parser.push('data: {"ty')).toEqual([]);
-    expect(parser.push('pe":"server.conn')).toEqual([]);
-    expect(parser.push('ected"}\n\n')).toEqual(['{"type":"server.connected"}']);
-  });
-
-  it("handles several events in one chunk", () => {
-    const parser = new SseParser();
-    const out = parser.push('data: {"n":1}\n\ndata: {"n":2}\n\ndata: {"n":3}\n\n');
-    expect(out).toEqual(['{"n":1}', '{"n":2}', '{"n":3}']);
+    expect(parser.push("data: hello\ndata: world\n\n")).toEqual(["hello\nworld"]);
   });
 
   it("normalises CRLF line endings", () => {
     const parser = new SseParser();
-    expect(parser.push('data: {"n":1}\r\n\r\n')).toEqual(['{"n":1}']);
+    expect(parser.push("data: hello\r\n\r\n")).toEqual(["hello"]);
   });
 
-  it("ignores comment frames such as heartbeats", () => {
+  it("drops comment-only frames", () => {
     const parser = new SseParser();
     expect(parser.push(": keep-alive\n\n")).toEqual([]);
   });
 
-  it("ignores non-data fields", () => {
+  it("buffers a frame split across chunks", () => {
     const parser = new SseParser();
-    expect(parser.push('event: ping\nid: 7\n\n')).toEqual([]);
+    expect(parser.push('data: {"type":"session.idle"')).toEqual([]);
+    expect(parser.push('}\n\n')).toEqual(['{"type":"session.idle"}']);
   });
 
-  it("joins multi-line data fields", () => {
+  it("flushes a trailing frame at end of stream", () => {
     const parser = new SseParser();
-    expect(parser.push("data: one\ndata: two\n\n")).toEqual(["one\ntwo"]);
-  });
-
-  it("flushes a trailing frame with no terminating blank line", () => {
-    const parser = new SseParser();
-    parser.push('data: {"n":1}');
-    expect(parser.flush()).toEqual(['{"n":1}']);
+    expect(parser.push('data: {"type":"tail"}')).toEqual([]);
+    expect(parser.flush()).toEqual(['{"type":"tail"}']);
+    expect(parser.flush()).toEqual([]);
   });
 });
 
 describe("subscribe", () => {
-  it("delivers decoded events", async () => {
-    const events: ServerEvent[] = [];
-    const handle = subscribe("http://127.0.0.1:4096/event", {
-      onEvent: (event) => events.push(event),
-      fetchImpl: vi.fn().mockResolvedValue(
-        streamOf([frame({ id: "evt_1", type: "server.connected", properties: {} })]),
-      ),
-    });
-
-    await vi.waitFor(() => expect(events).toHaveLength(1));
-    expect(events[0]!.type).toBe("server.connected");
-    handle.close();
-  });
-
-  it("skips malformed frames without tearing down the stream", async () => {
-    const events: ServerEvent[] = [];
-    const handle = subscribe("http://127.0.0.1:4096/event", {
-      onEvent: (event) => events.push(event),
-      fetchImpl: vi.fn().mockResolvedValue(
-        streamOf(["data: {not json\n\n", frame({ id: "evt_2", type: "session.idle", properties: {} })]),
-      ),
-    });
-
-    await vi.waitFor(() => expect(events).toHaveLength(1));
-    // One bad frame must not cost the user the rest of the session.
-    expect(events[0]!.type).toBe("session.idle");
-    handle.close();
-  });
-
-  it("reports open once the stream is established", async () => {
+  it("delivers typed events, merges headers and reports status", async () => {
+    const seen: V2Event[] = [];
     const statuses: string[] = [];
-    const handle = subscribe("http://127.0.0.1:4096/event", {
-      onEvent: () => {},
-      onStatus: (status) => statuses.push(status),
-      fetchImpl: vi.fn().mockResolvedValue(streamOf([])),
+    let headers: Record<string, string> | undefined;
+
+    const fetchImpl: typeof fetch = async (_input, init) => {
+      headers = init?.headers as Record<string, string> | undefined;
+      return new Response(
+        streamOf([
+          frame({ id: "evt_1", type: "server.connected", data: {} }),
+          frame({ id: "evt_2", type: "session.idle", data: { sessionID: "ses_1" } }),
+        ]),
+        { status: 200 },
+      );
+    };
+
+    const settled = deferred();
+    const handle = subscribe("http://localhost:4096/api/event", {
+      onEvent: (event) => seen.push(event),
+      onStatus: (status) => {
+        statuses.push(status);
+        if (status === "closed") settled.resolve();
+      },
+      headers: { Authorization: "Basic abc" },
+      fetchImpl,
+      retryDelayMs: 60_000,
     });
 
-    await vi.waitFor(() => expect(statuses).toContain("open"));
+    await settled.promise;
     handle.close();
+
+    expect(seen.map((event) => event.type)).toEqual(["server.connected", "session.idle"]);
+    expect(headers).toMatchObject({
+      Accept: "text/event-stream",
+      Authorization: "Basic abc",
+    });
+    expect(statuses).toContain("open");
+    expect(statuses.indexOf("closed")).toBeGreaterThan(statuses.indexOf("open"));
   });
 
-  it("reconnects after the stream ends", async () => {
-    // Each call must yield a *fresh* stream; reusing an exhausted reader would
-    // return `done` immediately and turn this into a reconnect storm.
-    let call = 0;
-    const fetchImpl = vi.fn().mockImplementation(async () => {
-      call += 1;
-      if (call === 1) {
-        return streamOf([frame({ id: "evt_1", type: "first", properties: {} })]);
-      }
-      return streamOf([frame({ id: "evt_2", type: "second", properties: {} })]);
-    });
+  it("skips malformed and typeless frames without tearing down", async () => {
+    const seen: V2Event[] = [];
 
-    const events: ServerEvent[] = [];
-    const handle = subscribe("http://127.0.0.1:4096/event", {
-      onEvent: (event) => events.push(event),
+    const fetchImpl: typeof fetch = async () =>
+      new Response(
+        streamOf([
+          "data: not-json\n\n",
+          frame({ foo: 1 }),
+          frame({ id: "evt_ok", type: "server.connected", data: {} }),
+        ]),
+        { status: 200 },
+      );
+
+    const settled = deferred();
+    const handle = subscribe("http://localhost:4096/api/event", {
+      onEvent: (event) => seen.push(event),
+      onStatus: (status) => {
+        if (status === "closed") settled.resolve();
+      },
       fetchImpl,
-      retryDelayMs: 5,
-      maxRetryDelayMs: 5,
+      retryDelayMs: 60_000,
     });
 
-    await vi.waitFor(() => expect(events.length).toBeGreaterThanOrEqual(2), { timeout: 3000 });
-    expect(events.map((e) => e.type)).toContain("first");
-    expect(events.map((e) => e.type)).toContain("second");
-    expect(fetchImpl.mock.calls.length).toBeGreaterThanOrEqual(2);
+    await settled.promise;
     handle.close();
-  }, 5000);
 
-  it("stops fetching once closed", async () => {
-    const fetchImpl = vi.fn().mockResolvedValue(streamOf([]));
-    const handle = subscribe("http://127.0.0.1:4096/event", {
-      onEvent: () => {},
-      fetchImpl,
-      retryDelayMs: 5,
-    });
-    handle.close();
-    const callsAtClose = fetchImpl.mock.calls.length;
-    await new Promise((resolve) => setTimeout(resolve, 60));
-    expect(fetchImpl.mock.calls.length).toBe(callsAtClose);
+    expect(seen).toHaveLength(1);
+    expect(seen[0]!.id).toBe("evt_ok");
+  });
+
+  it("stops reconnecting when the server rejects the credential", async () => {
+    vi.useFakeTimers();
+    try {
+      const statuses: string[] = [];
+      const fetchImpl = vi.fn(async () => new Response(null, { status: 401 }));
+
+      const handle = subscribe("http://localhost:4096/api/event", {
+        onEvent: () => {},
+        onStatus: (status) => statuses.push(status),
+        fetchImpl,
+        retryDelayMs: 1,
+      });
+
+      // Let any old backoff timer fire: a surviving loop would retry here.
+      await Promise.resolve();
+      await Promise.resolve();
+      await vi.advanceTimersByTimeAsync(50);
+      handle.close();
+
+      // A 401 is a credential bug, not a network blip: retrying replays it.
+      expect(fetchImpl).toHaveBeenCalledTimes(1);
+      expect(statuses).toContain("unauthorized");
+      expect(statuses).not.toContain("error");
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("still retries transient failures", async () => {
+    vi.useFakeTimers();
+    try {
+      const statuses: string[] = [];
+      const fetchImpl = vi.fn(async () => new Response(null, { status: 503 }));
+
+      const handle = subscribe("http://localhost:4096/api/event", {
+        onEvent: () => {},
+        onStatus: (status) => statuses.push(status),
+        fetchImpl,
+        retryDelayMs: 1,
+      });
+
+      await Promise.resolve();
+      await Promise.resolve();
+      await vi.advanceTimersByTimeAsync(50);
+      handle.close();
+
+      expect(fetchImpl.mock.calls.length).toBeGreaterThan(1);
+      expect(statuses).toContain("error");
+    } finally {
+      vi.useRealTimers();
+    }
   });
 });
